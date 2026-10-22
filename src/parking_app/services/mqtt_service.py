@@ -1,8 +1,11 @@
-"""Suscripción MQTT al tópico de ocupación con las credenciales del usuario.
+"""Suscripción MQTT con las credenciales del usuario a dos tópicos:
 
-paho corre su propio hilo de red: los callbacks `al_recibir` y
-`al_cambiar_estado` se invocan desde ese hilo, así que quien los reciba debe
-reenviarlos a su event loop (el ViewModel usa `call_soon_threadsafe`).
+- ocupación (`prueba1`): lecturas de los sensores → `al_recibir`.
+- sistema (`reserva1/+`, retenidos): bloqueos y reservas → `al_recibir_sistema`.
+
+paho corre su propio hilo de red: los callbacks se invocan desde ese hilo, así
+que quien los reciba debe reenviarlos a su event loop (el ViewModel usa
+`call_soon_threadsafe`).
 """
 
 import logging
@@ -16,7 +19,11 @@ import certifi
 import paho.mqtt.client as mqtt
 
 from parking_app.core.config import ConfigMqtt
-from parking_app.models.evento_ocupacion import EventoOcupacion, PayloadInvalidoError
+from parking_app.models.evento_ocupacion import (
+    EventoOcupacion,
+    EventoSistema,
+    PayloadInvalidoError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +41,7 @@ class EstadoConexion(StrEnum):
 
 
 AlRecibir = Callable[[EventoOcupacion], None]
+AlRecibirSistema = Callable[[EventoSistema], None]
 AlCambiarEstado = Callable[[EstadoConexion], None]
 
 # Clase representativa para abrir la conexión a EMQX mediante paho usando las credenciales del usuario, con TLS verificado mediante certifi
@@ -55,8 +63,11 @@ class MqttService:
         )
         self._cliente: Any = None
         self._topico = ""
+        self._topico_sistema = ""
+        self._prefijo_sistema = ""
         self._cerrando = False
         self._al_recibir: AlRecibir = lambda _: None
+        self._al_recibir_sistema: AlRecibirSistema = lambda _: None
         self._al_cambiar_estado: AlCambiarEstado = lambda _: None
 
     def conectar(
@@ -65,12 +76,16 @@ class MqttService:
         password: str,
         al_recibir: AlRecibir,
         al_cambiar_estado: AlCambiarEstado,
+        al_recibir_sistema: AlRecibirSistema | None = None,
     ) -> None:
         """Conecta en segundo plano; paho reintenta solo si se pierde la conexión."""
         self.desconectar()
         config = self._config_factory()
         self._topico = config.topico_ocupacion
+        self._topico_sistema = config.topico_sistema
+        self._prefijo_sistema = f"{config.topico_sistema_base}/"
         self._al_recibir = al_recibir
+        self._al_recibir_sistema = al_recibir_sistema or (lambda _: None)
         self._al_cambiar_estado = al_cambiar_estado
         self._cerrando = False
 
@@ -115,7 +130,8 @@ class MqttService:
                 logger.warning("Conexión MQTT rechazada: %s", reason_code)
                 self._notificar(EstadoConexion.RECONECTANDO)
             return
-        cliente.subscribe(self._topico, qos=1)
+        # Al suscribirse a reserva1/+ el broker entrega el último estado retenido de cada cajón.
+        cliente.subscribe([(self._topico, 1), (self._topico_sistema, 1)])
         self._notificar(EstadoConexion.CONECTADO)
 
     def _on_disconnect(self, _cliente, _userdata, _flags, reason_code, _properties=None) -> None:
@@ -126,14 +142,22 @@ class MqttService:
         self._notificar(EstadoConexion.RECONECTANDO)
 
     def _on_message(self, _cliente, _userdata, mensaje) -> None:
+        topico = getattr(mensaje, "topic", self._topico)
         # Un mensaje malformado de un nodo no debe afectar al resto.
         try:
-            evento = EventoOcupacion.from_payload(mensaje.payload)
+            if self._prefijo_sistema and topico.startswith(self._prefijo_sistema):
+                evento = EventoSistema.from_payload(mensaje.payload)
+                if topico[len(self._prefijo_sistema):] != str(evento.id_modulo):
+                    raise PayloadInvalidoError(f"id_modulo {evento.id_modulo} no coincide con {topico}")
+                destino: Callable[[Any], None] = self._al_recibir_sistema
+            else:
+                evento = EventoOcupacion.from_payload(mensaje.payload)
+                destino = self._al_recibir
         except PayloadInvalidoError as e:
-            logger.warning("Mensaje MQTT ignorado: %s", e)
+            logger.warning("Mensaje MQTT ignorado en %s: %s", topico, e)
             return
         try:
-            self._al_recibir(evento)
+            destino(evento)
         except Exception:
             logger.exception("Error al procesar el evento de %s", evento.etiqueta_cajon)
 

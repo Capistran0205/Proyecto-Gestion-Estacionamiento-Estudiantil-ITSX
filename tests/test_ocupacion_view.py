@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 
 from parking_app.core import theme
-from parking_app.models.cajon_estacionamiento import EstadoCajon
-from parking_app.models.evento_ocupacion import EventoOcupacion
+from parking_app.models.cajon_estacionamiento import EstadoCajon, EstadoSistema
+from parking_app.models.evento_ocupacion import EventoOcupacion, EventoSistema
 from parking_app.services.mqtt_service import EstadoConexion
 from parking_app.viewmodels.ocupacion_viewmodel import OcupacionViewModel
 from parking_app.views.ocupacion_view import OcupacionView
@@ -29,9 +29,10 @@ def test_eventos_colorean_cada_cajon_como_el_mockup():
     vista, vm = _vista()
     vm._cambiar_estado(EstadoConexion.CONECTADO)
     for modulo, estado in enumerate(
-        [EstadoCajon.LIBRE, EstadoCajon.OCUPADO, EstadoCajon.RESERVADO], start=1
+        [EstadoCajon.LIBRE, EstadoCajon.OCUPADO, EstadoCajon.LIBRE], start=1
     ):
         vm._recibir_evento(EventoOcupacion(id_modulo=modulo, estado=estado))
+    vm._recibir_sistema(EventoSistema(id_modulo=3, estado=EstadoSistema.RESERVADO))
 
     acentos = [t.color_acento for t in vista._tarjetas]
     assert acentos == [
@@ -41,6 +42,10 @@ def test_eventos_colorean_cada_cajon_como_el_mockup():
         "Libre", "Ocupado", "Reservado", "No conectado",
     ]
     assert vista._subtitulo.value == "1 de 4 cajones libres"
+
+    vm._recibir_sistema(EventoSistema(id_modulo=1, estado=EstadoSistema.BLOQUEADO))
+    assert vista._tarjetas[0].color_acento == "#FFCE1B"
+    assert vista._tarjetas[0]._texto.value == "Bloqueado"
     assert vista._pildora.texto == "En vivo"
     assert vista._pildora.control.bgcolor == theme.ALERTA_FONDO
 

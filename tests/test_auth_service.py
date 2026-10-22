@@ -451,3 +451,157 @@ def test_cerrar_sesion_cierra_registro_antes_de_sign_out():
     assert not sesion.activa
     assert not servicio.hay_sesion_activa
     assert servicio.credenciales_mqtt is None
+
+
+# --- Módulo A: modificación de datos y cambio de contraseña ---
+
+from postgrest.exceptions import APIError  # noqa: E402
+
+from parking_app.services.auth_service import (  # noqa: E402
+    CambioPasswordRevertidoError,
+    MedioTransporteBloqueadoError,
+    PasswordActualIncorrectaError,
+)
+
+MENSAJE_TRIGGER = "No puedes cambiar tu medio de transporte mientras tengas una reserva activa."
+
+
+def _con_sesion(cliente=None, reloj=None):
+    cliente = cliente or _cliente()
+    servicio = _servicio(cliente, reloj)
+    servicio.iniciar_sesion(CORREO, "Actual#2026")
+    cliente.auth.sign_in_with_password.reset_mock()
+    return servicio, cliente
+
+
+def _update(cliente):
+    return cliente.table.return_value.update
+
+
+def test_actualizar_perfil_hace_un_solo_update_sin_correo():
+    servicio, cliente = _con_sesion()
+    fila = {**_fila_usuario(), "nombre": "Ana Sofía", "medio_transporte": "motocicleta"}
+    _update(cliente).return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[fila])
+
+    usuario = servicio.actualizar_perfil("  Ana   Sofía ", "Pérez", "", MedioTransporte.MOTOCICLETA)
+
+    _update(cliente).assert_called_once_with({
+        "nombre": "Ana Sofía",
+        "apellido_paterno": "Pérez",
+        "apellido_materno": None,
+        "medio_transporte": "motocicleta",
+    })
+    _update(cliente).return_value.eq.assert_called_once_with("id_usuario", "uid-1")
+    assert usuario.nombre == "Ana Sofía"
+    assert servicio.usuario_actual is usuario
+
+
+def test_actualizar_perfil_con_reserva_activa_devuelve_el_mensaje_del_trigger():
+    servicio, cliente = _con_sesion()
+    _update(cliente).return_value.eq.return_value.execute.side_effect = APIError(
+        {"message": MENSAJE_TRIGGER, "code": "P0001", "hint": "RESERVA_ACTIVA", "details": None}
+    )
+
+    with pytest.raises(MedioTransporteBloqueadoError, match="reserva activa"):
+        servicio.actualizar_perfil("Ana", "Pérez", "López", MedioTransporte.MOTOCICLETA)
+    assert servicio.usuario_actual.medio_transporte is MedioTransporte.VEHICULO
+
+
+def test_actualizar_perfil_valida_antes_de_enviar():
+    servicio, cliente = _con_sesion()
+    with pytest.raises(DatosInvalidosError) as e:
+        servicio.actualizar_perfil("Ana", "García2", "", MedioTransporte.VEHICULO)
+    assert e.value.campo == "apellido_paterno"
+    _update(cliente).assert_not_called()
+
+
+def test_actualizar_perfil_sin_filas_afectadas_es_un_error():
+    servicio, cliente = _con_sesion()
+    _update(cliente).return_value.eq.return_value.execute.return_value = SimpleNamespace(data=[])
+    with pytest.raises(ServicioNoDisponibleError):
+        servicio.actualizar_perfil("Ana", "Pérez", "", MedioTransporte.VEHICULO)
+
+
+def test_actualizar_perfil_sin_sesion():
+    with pytest.raises(SinSesionError):
+        _servicio(_cliente()).actualizar_perfil("Ana", "Pérez", "", MedioTransporte.VEHICULO)
+
+
+def test_cambiar_password_reautentica_actualiza_y_sincroniza_en_orden():
+    servicio, cliente = _con_sesion()
+    servicio.descartar_password_mqtt()
+    pasos = []
+    cliente.auth.sign_in_with_password.side_effect = lambda *_: pasos.append("reautenticar")
+    cliente.auth.update_user.side_effect = lambda datos: pasos.append(("supabase", datos["password"]))
+
+    servicio.cambiar_password("Actual#2026", "Nueva#2026", lambda c, p: pasos.append(("emqx", c, p)))
+
+    assert pasos == ["reautenticar", ("supabase", "Nueva#2026"), ("emqx", CORREO, "Nueva#2026")]
+    cliente.auth.sign_in_with_password.assert_called_once_with(
+        {"email": CORREO, "password": "Actual#2026"}
+    )
+    # La nueva queda en memoria solo para reconectar MQTT.
+    assert servicio.credenciales_mqtt.password == "Nueva#2026"
+
+
+def test_cambiar_password_con_la_actual_incorrecta_no_cambia_nada():
+    servicio, cliente = _con_sesion()
+    cliente.auth.sign_in_with_password.side_effect = _error_credenciales()
+    emqx = MagicMock()
+
+    with pytest.raises(PasswordActualIncorrectaError) as e:
+        servicio.cambiar_password("Mala#2026", "Nueva#2026", emqx)
+
+    assert e.value.intentos_restantes == 2
+    cliente.auth.update_user.assert_not_called()
+    emqx.assert_not_called()
+
+
+def test_cambiar_password_bloquea_tras_tres_intentos():
+    reloj = RelojFalso()
+    servicio, cliente = _con_sesion(reloj=reloj)
+    cliente.auth.sign_in_with_password.side_effect = _error_credenciales()
+    for _ in range(2):
+        with pytest.raises(PasswordActualIncorrectaError):
+            servicio.cambiar_password("Mala#2026", "Nueva#2026", MagicMock())
+    with pytest.raises(CuentaBloqueadaError):
+        servicio.cambiar_password("Mala#2026", "Nueva#2026", MagicMock())
+    # Bloqueado: ni siquiera se consulta a Supabase.
+    cliente.auth.sign_in_with_password.reset_mock()
+    with pytest.raises(CuentaBloqueadaError):
+        servicio.cambiar_password("Actual#2026", "Nueva#2026", MagicMock())
+    cliente.auth.sign_in_with_password.assert_not_called()
+
+
+def test_si_emqx_falla_se_revierte_supabase_con_la_actual():
+    servicio, cliente = _con_sesion()
+    servicio.descartar_password_mqtt()
+    emqx = MagicMock(side_effect=RuntimeError("EMQX caído"))
+
+    with pytest.raises(CambioPasswordRevertidoError):
+        servicio.cambiar_password("Actual#2026", "Nueva#2026", emqx)
+
+    assert [c.args[0]["password"] for c in cliente.auth.update_user.call_args_list] == [
+        "Nueva#2026",
+        "Actual#2026",
+    ]
+    assert servicio.credenciales_mqtt is None
+
+
+def test_si_tampoco_se_puede_revertir_la_nueva_queda_vigente():
+    servicio, cliente = _con_sesion()
+    cliente.auth.update_user.side_effect = [None, AuthApiError("down", 500, "unexpected_failure")]
+
+    # No se informa error: la contraseña de la cuenta ya es la nueva.
+    servicio.cambiar_password("Actual#2026", "Nueva#2026", MagicMock(side_effect=RuntimeError()))
+
+    assert servicio.credenciales_mqtt.password == "Nueva#2026"
+
+
+def test_cambiar_password_debil_no_toca_emqx():
+    servicio, cliente = _con_sesion()
+    cliente.auth.update_user.side_effect = AuthWeakPasswordError("weak", 422, ["pwned"])
+    emqx = MagicMock()
+    with pytest.raises(PasswordDebilError):
+        servicio.cambiar_password("Actual#2026", "Nueva#2026", emqx)
+    emqx.assert_not_called()

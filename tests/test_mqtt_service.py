@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 
 from parking_app.core.config import ConfigMqtt
-from parking_app.models.cajon_estacionamiento import EstadoCajon
+from parking_app.models.cajon_estacionamiento import EstadoCajon, EstadoSistema
 from parking_app.services.mqtt_service import EstadoConexion, MqttService
 
 TOPICO = "infraestructura/pruebaiot/prueba1"
+BASE_SISTEMA = "infraestructura/pruebaiot/reserva1"
 
 
 class ClienteFalso:
@@ -26,11 +27,14 @@ def _servicio(puerto=8883):
         return clientes[-1]
 
     servicio = MqttService(
-        config_factory=lambda: ConfigMqtt("broker.ejemplo", puerto, TOPICO),
+        config_factory=lambda: ConfigMqtt("broker.ejemplo", puerto, TOPICO, BASE_SISTEMA),
         cliente_factory=fabrica,
     )
     eventos, estados = [], []
-    servicio.conectar("ana@itsx.edu.mx", "Segura#2026", eventos.append, estados.append)
+    servicio.conectar(
+        "ana@itsx.edu.mx", "Segura#2026", eventos.append, estados.append,
+        al_recibir_sistema=eventos.append,
+    )
     return servicio, clientes[0], eventos, estados
 
 
@@ -58,12 +62,12 @@ def test_sin_tls_en_puerto_1883():
     assert "tls_set" not in _nombres(cliente)
 
 
-def test_al_conectar_se_suscribe_al_topico():
+def test_al_conectar_se_suscribe_a_ocupacion_y_reservas():
     _, cliente, _, estados = _servicio()
 
     cliente.on_connect(cliente, None, None, _rc())
 
-    assert ("subscribe", (TOPICO,), {"qos": 1}) in cliente.llamadas
+    assert ("subscribe", ([(TOPICO, 1), (f"{BASE_SISTEMA}/+", 1)],), {}) in cliente.llamadas
     assert estados[-1] == EstadoConexion.CONECTADO
 
 
@@ -95,6 +99,22 @@ def test_mensajes_validos_e_invalidos():
     assert len(eventos) == 1
     assert eventos[0].etiqueta_cajon == "C3"
     assert eventos[0].estado is EstadoCajon.OCUPADO
+
+
+def test_mensajes_de_reservas_van_al_callback_del_sistema():
+    _, cliente, eventos, _ = _servicio()
+
+    for topico, payload in (
+        (f"{BASE_SISTEMA}/2", b'{"id_modulo": 2, "estado": "reservado"}'),
+        (f"{BASE_SISTEMA}/3", b'{"id_modulo": 4, "estado": "bloqueado"}'),  # no coincide
+        (f"{BASE_SISTEMA}/1", b'{"id_modulo": 1, "estado": "ocupado"}'),  # no es del sistema
+        (TOPICO, b'{"id_modulo": 1, "estado": "reservado"}'),  # el sensor no reserva
+    ):
+        cliente.on_message(cliente, None, SimpleNamespace(topic=topico, payload=payload))
+
+    assert len(eventos) == 1
+    assert eventos[0].etiqueta_cajon == "C2"
+    assert eventos[0].estado is EstadoSistema.RESERVADO
 
 
 def test_desconectar():

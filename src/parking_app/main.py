@@ -12,7 +12,8 @@ from parking_app.services.emqx_admin_service import EmqxAdminService
 from parking_app.services.mqtt_service import MqttService
 
 # Ruta absoluta: Flet resuelve "assets" relativo al script de arranque (main.py de la raíz).
-ASSETS_DIR = Path(__file__).parent / "assets"
+# Vive en src/assets porque `flet build` busca ahí los assets y el icono de la app.
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 # Icono de ventana: solo aplica en Windows y exige formato .ico.
 ICONO_VENTANA = ASSETS_DIR / "icon.ico"
 

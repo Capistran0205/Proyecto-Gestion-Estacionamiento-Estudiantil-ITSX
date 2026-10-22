@@ -1,14 +1,22 @@
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
 from parking_app.core.config import NUM_CAJONES
 from parking_app.core.observable import Observable
-from parking_app.models.cajon_estacionamiento import EstadoCajon, etiqueta_de_modulo
-from parking_app.models.evento_ocupacion import EventoOcupacion
+from parking_app.models.cajon_estacionamiento import (
+    ESTADOS_SENSOR,
+    EstadoCajon,
+    EstadoSistema,
+    estado_efectivo,
+    etiqueta_de_modulo,
+    sensor_de_estado_efectivo,
+    sistema_de_estado_efectivo,
+)
+from parking_app.models.evento_ocupacion import EventoOcupacion, EventoSistema
 from parking_app.services.auth_service import AuthService, CredencialesMqtt
 from parking_app.services.cajones_service import CajonesService
 from parking_app.services.emqx_admin_service import EmqxAdminService
@@ -23,6 +31,7 @@ TEXTOS_ESTADO = {
     EstadoCajon.LIBRE: "Libre",
     EstadoCajon.OCUPADO: "Ocupado",
     EstadoCajon.RESERVADO: "Reservado",
+    EstadoCajon.BLOQUEADO: "Bloqueado",
     EstadoCajon.NO_CONECTADO: "No conectado",
 }
 
@@ -48,6 +57,12 @@ class CajonVista:
     etiqueta: str
     estado: EstadoCajon
     texto_estado: str
+    id_cajon: int = 0
+
+    @property
+    def seleccionable(self) -> bool:
+        """Solo un cajón libre puede elegirse para reservar."""
+        return self.estado == EstadoCajon.LIBRE
 
 
 class OcupacionViewModel(Observable):
@@ -60,6 +75,7 @@ class OcupacionViewModel(Observable):
         timeout_nodo_segundos: int,
         al_ir_a_inicio: Navegar,
         reloj: Callable[[], float] = time.monotonic,
+        al_reservar: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> None:
         super().__init__()
         self._auth = auth_service
@@ -69,13 +85,23 @@ class OcupacionViewModel(Observable):
         self._timeout_nodo = timeout_nodo_segundos
         self._al_ir_a_inicio = al_ir_a_inicio
         self._reloj = reloj
+        self._al_reservar = al_reservar
 
         etiquetas = [etiqueta_de_modulo(i) for i in range(1, NUM_CAJONES + 1)]
-        self._estados: dict[str, EstadoCajon] = dict.fromkeys(etiquetas, EstadoCajon.NO_CONECTADO)
+        # id_cajon de la base (lo pide el backend); hasta el snapshot se asume C<n> = n.
+        self._ids: dict[str, int] = {etiqueta_de_modulo(i): i for i in range(1, NUM_CAJONES + 1)}
+        # Por cajón se guardan las dos fuentes y el estado efectivo se calcula con
+        # la misma regla que el backend: sensor (prueba1) y sistema (reserva1/+).
+        self._sensor: dict[str, EstadoCajon] = dict.fromkeys(etiquetas, EstadoCajon.NO_CONECTADO)
+        self._sistema: dict[str, EstadoSistema] = dict.fromkeys(etiquetas, EstadoSistema.LIBERADO)
         # Plazo de cada nodo para el timeout de "no conectado".
         self._ultimo_reporte: dict[str, float] = {}
-        # Cajones con al menos un evento MQTT (el snapshot ya no los pisa).
+        # Cajones con al menos un mensaje MQTT de cada fuente (el snapshot ya no los pisa).
         self._con_evento: set[str] = set()
+        self._con_evento_sistema: set[str] = set()
+        # Mensajes del backend por cajón: cada operación (reservar, cancelar, llegada,
+        # salida...) publica aunque el estado no cambie; sirve de aviso a las pantallas.
+        self._avisos_sistema: dict[str, int] = dict.fromkeys(etiquetas, 0)
         self._ultima_actualizacion: float | None = None
         self.estado_conexion = EstadoConexion.CONECTANDO
         self.cargando = True
@@ -90,9 +116,13 @@ class OcupacionViewModel(Observable):
     # --- Propiedades de presentación ---
 
     @property
+    def _estados(self) -> dict[str, EstadoCajon]:
+        return {e: estado_efectivo(self._sensor[e], self._sistema[e]) for e in self._sensor}
+
+    @property
     def cajones(self) -> list[CajonVista]:
         return [
-            CajonVista(etiqueta, estado, TEXTOS_ESTADO[estado])
+            CajonVista(etiqueta, estado, TEXTOS_ESTADO[estado], self._ids[etiqueta])
             for etiqueta, estado in self._estados.items()
         ]
 
@@ -116,16 +146,20 @@ class OcupacionViewModel(Observable):
         return self._contar(EstadoCajon.RESERVADO)
 
     @property
+    def bloqueados(self) -> int:
+        return self._contar(EstadoCajon.BLOQUEADO)
+
+    @property
     def con_datos(self) -> int:
         """Cajones cuyo estado se conoce (no "no conectado")."""
         return self.total - self._contar(EstadoCajon.NO_CONECTADO)
 
     @property
     def porcentaje_ocupado(self) -> int:
-        """Ocupados + reservados sobre los cajones con datos (0 si no hay datos)."""
+        """Cajones no disponibles (ocupados, reservados o bloqueados) sobre los cajones con datos."""
         if self.con_datos == 0:
             return 0
-        return round(100 * (self.ocupados + self.reservados) / self.con_datos)
+        return round(100 * (self.con_datos - self.libres) / self.con_datos)
 
     @property
     def nivel_disponibilidad(self) -> NivelDisponibilidad:
@@ -195,6 +229,26 @@ class OcupacionViewModel(Observable):
     async def ir_a_inicio(self) -> None:
         await llamar(self._al_ir_a_inicio)
 
+    def cajon(self, etiqueta: str) -> CajonVista | None:
+        return next((c for c in self.cajones if c.etiqueta == etiqueta), None)
+
+    async def reservar(self, etiqueta: str) -> None:
+        """Tocar un cajón del mapa: solo un cajón libre abre la reserva."""
+        cajon = self.cajon(etiqueta)
+        if self._al_reservar is None or cajon is None or not cajon.seleccionable:
+            return
+        await llamar(lambda: self._al_reservar(etiqueta))
+
+    def reconectar_mqtt(self) -> None:
+        """Tras cambiar la contraseña: paho reconectaría con la anterior y el broker
+        la rechazaría. Se reconecta con la nueva, que el servicio dejó en memoria y
+        que se descarta al conectar. Como es la recién verificada, vuelve a haber un
+        intento de resincronizar EMQX si el broker la rechaza."""
+        if self._loop is None:
+            return
+        self._sincronizacion_intentada = False
+        self._conectar_mqtt()
+
     # --- Internos ---
 
     async def _cargar_snapshot(self) -> None:
@@ -209,9 +263,15 @@ class OcupacionViewModel(Observable):
             self.error_snapshot = True
         else:
             for cajon in cajones:
-                # Un evento MQTT que llegó antes que el snapshot es más reciente.
-                if cajon.etiqueta in self._estados and cajon.etiqueta not in self._con_evento:
-                    self._estados[cajon.etiqueta] = cajon.estado_actual
+                etiqueta = cajon.etiqueta
+                if etiqueta not in self._sensor:
+                    continue
+                self._ids[etiqueta] = cajon.id_cajon
+                # estado_actual es el efectivo; un mensaje MQTT que llegó antes es más reciente.
+                if etiqueta not in self._con_evento:
+                    self._sensor[etiqueta] = sensor_de_estado_efectivo(cajon.estado_actual)
+                if etiqueta not in self._con_evento_sistema:
+                    self._sistema[etiqueta] = sistema_de_estado_efectivo(cajon.estado_actual)
             self._ultima_actualizacion = self._ultima_actualizacion or self._reloj()
         finally:
             self.cargando = False
@@ -229,6 +289,7 @@ class OcupacionViewModel(Observable):
                 credenciales.password,
                 al_recibir=lambda evento: self._en_loop(self._recibir_evento, evento),
                 al_cambiar_estado=lambda estado: self._en_loop(self._cambiar_estado, estado),
+                al_recibir_sistema=lambda evento: self._en_loop(self._recibir_sistema, evento),
             )
         except Exception:
             logger.exception("No se pudo iniciar la conexión MQTT")
@@ -242,19 +303,37 @@ class OcupacionViewModel(Observable):
             loop.call_soon_threadsafe(funcion, *args)
 
     def _recibir_evento(self, evento: EventoOcupacion) -> None:
+        """Lectura de un sensor (prueba1)."""
+        if evento.estado not in ESTADOS_SENSOR:
+            logger.warning("Lectura de sensor ignorada en %s: %s", evento.etiqueta_cajon, evento.estado)
+            return
         ahora = self._reloj()
-        self._estados[evento.etiqueta_cajon] = evento.estado
+        self._sensor[evento.etiqueta_cajon] = evento.estado
         self._ultimo_reporte[evento.etiqueta_cajon] = ahora
         self._con_evento.add(evento.etiqueta_cajon)
         self._ultima_actualizacion = ahora
         self.notify_listeners()
+
+    def _recibir_sistema(self, evento: EventoSistema) -> None:
+        """Bloqueo o reserva publicado por el backend (reserva1/+). No cuenta como
+        reporte del nodo: el timeout de "no conectado" sigue dependiendo del sensor."""
+        self._sistema[evento.etiqueta_cajon] = evento.estado
+        self._con_evento_sistema.add(evento.etiqueta_cajon)
+        self._avisos_sistema[evento.etiqueta_cajon] = (
+            self._avisos_sistema.get(evento.etiqueta_cajon, 0) + 1)
+        self._ultima_actualizacion = self._reloj()
+        self.notify_listeners()
+
+    def avisos_del_sistema(self, etiqueta: str) -> int:
+        """Cuántos mensajes del backend llegaron para el cajón (aunque repitan el estado)."""
+        return self._avisos_sistema.get(etiqueta, 0)
 
     def _cambiar_estado(self, estado: EstadoConexion) -> None:
         if estado == EstadoConexion.CONECTADO:
             # El plazo de cada nodo cuenta desde que hay conexión (también al
             # reconectar: mientras no había conexión no pudo llegar nada).
             ahora = self._reloj()
-            for etiqueta in self._estados:
+            for etiqueta in self._sensor:
                 self._ultimo_reporte[etiqueta] = ahora
             # El broker aceptó la contraseña: ya no hace falta en memoria.
             self._auth.descartar_password_mqtt()
@@ -310,7 +389,7 @@ class OcupacionViewModel(Observable):
         ahora = self._reloj()
         for etiqueta, ultimo in self._ultimo_reporte.items():
             if ahora - ultimo > self._timeout_nodo:
-                self._estados[etiqueta] = EstadoCajon.NO_CONECTADO
+                self._sensor[etiqueta] = EstadoCajon.NO_CONECTADO
 
     async def _tic(self) -> None:
         while True:

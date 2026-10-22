@@ -71,12 +71,55 @@ def _tarjeta_modulo(icono, fondo_icono, color_icono, titulo, subtitulo, on_click
     )
 
 
+class _TarjetaMiReserva:
+    """Fila "Mi reserva" (ícono, título, insignia "En uso", subtítulo y flecha)."""
+
+    def __init__(self, on_click) -> None:
+        ocupado = theme.colores_estado("ocupado").acento
+        self.insignia = ft.Container(
+            visible=False,
+            border=ft.Border.all(1, ocupado),
+            border_radius=10,
+            padding=ft.Padding.symmetric(vertical=1, horizontal=8),
+            content=ft.Text("En uso", size=11, weight=ft.FontWeight.W_700, color=ocupado),
+        )
+        self.subtitulo = ft.Text(size=13, color=theme.TEXTO_SECUNDARIO)
+        self.control = ft.Container(
+            visible=False,
+            border_radius=18,
+            bgcolor=theme.MAPA_FONDO,
+            border=ft.Border.all(1, theme.BORDE_CAMPO),
+            padding=ft.Padding.symmetric(vertical=16, horizontal=16),
+            on_click=on_click,
+            content=ft.Row(
+                spacing=14,
+                controls=[
+                    icono_destacado(ft.Icons.EVENT_AVAILABLE_OUTLINED, theme.ICONO_NARANJA_FONDO,
+                                    theme.ICONO_NARANJA),
+                    ft.Column(
+                        expand=True,
+                        spacing=4,
+                        controls=[
+                            ft.Row(spacing=10, controls=[
+                                ft.Text("Mi reserva", size=16, weight=ft.FontWeight.W_700,
+                                        color=theme.TEXTO),
+                                self.insignia,
+                            ]),
+                            self.subtitulo,
+                        ],
+                    ),
+                    ft.Icon(ft.Icons.CHEVRON_RIGHT, color=theme.TEXTO_SECUNDARIO),
+                ],
+            ),
+        )
+
+
 class InicioView:
     """Menú principal con resumen en vivo y menú sándwich (perfil / cerrar sesión)."""
 
     def __init__(self, vm: InicioViewModel) -> None:
         self._vm = vm
-        self._menu = MenuSandwich(self._on_cerrar_menu, self._on_cerrar_sesion)
+        self._menu = MenuSandwich(self._on_cerrar_menu, self._on_cerrar_sesion, self._on_mi_perfil)
 
         self._saludo = ft.Text(size=14, color=theme.TEXTO_SECUNDARIO)
         self._nombre = ft.Text(size=22, weight=ft.FontWeight.BOLD, color=theme.TEXTO)
@@ -146,6 +189,16 @@ class InicioView:
                                 "Historial", "Horas promedio", None, habilitado=False),
             ],
         )
+        # Solo el estudiante con una reserva vigente (pendiente o en uso).
+        self._mi_reserva = _TarjetaMiReserva(self._on_mi_reserva)
+        # Módulo C: solo lo ve el administrador.
+        self._modulo_admin = ft.Row(
+            visible=vm.es_administrador,
+            controls=[
+                _tarjeta_modulo(ft.Icons.QR_CODE_SCANNER, theme.ALERTA_FONDO, theme.NARANJA,
+                                "Reservas", "Validar llegadas con QR", self._on_reservas),
+            ],
+        )
         contenido = ft.Column(
             expand=True,
             scroll=ft.ScrollMode.AUTO,
@@ -174,6 +227,8 @@ class InicioView:
                             ft.Text("Módulos", size=16, weight=ft.FontWeight.W_600,
                                     color=theme.TEXTO),
                             modulos,
+                            self._mi_reserva.control,
+                            self._modulo_admin,
                         ],
                     ),
                 ),
@@ -211,6 +266,7 @@ class InicioView:
     def desmontar(self) -> None:
         self._vm.remove_listener(self._on_cambio)
         self._vm.ocupacion.remove_listener(self._on_cambio)
+        self._vm.liberar()
 
     # --- ViewModel -> View ---
 
@@ -220,6 +276,12 @@ class InicioView:
 
     def _render(self) -> None:
         vm, ocupacion = self._vm, self._vm.ocupacion
+        self._modulo_admin.visible = vm.es_administrador
+        tarjeta = vm.tarjeta_reserva
+        self._mi_reserva.control.visible = tarjeta is not None
+        if tarjeta is not None:
+            self._mi_reserva.subtitulo.value = tarjeta.subtitulo
+            self._mi_reserva.insignia.visible = tarjeta.en_uso
         self._saludo.value = vm.saludo
         self._nombre.value = vm.nombre_corto
         self._menu.sincronizar(vm.iniciales, vm.nombre_completo, vm.numero_control, vm.correo,
@@ -253,5 +315,18 @@ class InicioView:
     async def _on_cerrar_sesion(self, _e: ft.Event) -> None:
         await self._vm.cerrar_sesion()
 
+    async def _on_mi_perfil(self, _e: ft.Event) -> None:
+        try:
+            await self.view.close_end_drawer()
+        except (RuntimeError, AttributeError):
+            pass
+        await self._vm.ir_a_perfil()
+
     async def _on_ocupacion(self, _e: ft.Event) -> None:
         await self._vm.ir_a_ocupacion()
+
+    async def _on_reservas(self, _e: ft.Event) -> None:
+        await self._vm.ir_a_reservas()
+
+    async def _on_mi_reserva(self, _e: ft.Event) -> None:
+        await self._vm.ir_a_mi_reserva()

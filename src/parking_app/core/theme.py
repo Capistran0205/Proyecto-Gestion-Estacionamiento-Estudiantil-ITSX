@@ -30,6 +30,8 @@ BARRA_INFERIOR = "#131A19"
 # Fondos claros de los íconos destacados (recuperar contraseña)
 ICONO_AZUL_FONDO = "#DCEFF7"
 ICONO_VERDE_FONDO = "#DDF3EC"
+ICONO_NARANJA_FONDO = "#FDE3C0"
+ICONO_NARANJA = "#B86E10"
 BORDE_CAMPO = "#2C3836"
 TEXTO = "#F1F5F4"
 TEXTO_SECUNDARIO = "#A3AEAC"
@@ -55,6 +57,7 @@ COLORES_ESTADO_CAJON: dict[str, ColoresEstado] = {
     "ocupado": ColoresEstado(fondo="#2e1a1a", acento="#ef4444"),
     "no conectado": ColoresEstado(fondo="#2a2a2a", acento="#9ca3af"),
     "reservado": ColoresEstado(fondo="#1e1a2e", acento="#305CDE"),
+    "bloqueado": ColoresEstado(fondo="#413817", acento="#FFCE1B"),
 }
 
 

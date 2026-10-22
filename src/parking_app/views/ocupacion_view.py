@@ -6,30 +6,13 @@ from parking_app.viewmodels.ocupacion_viewmodel import TEXTOS_ESTADO, OcupacionV
 from parking_app.views.components.barra_navegacion import Seccion, barra_navegacion
 from parking_app.views.components.formulario import actualizar, boton_regresar
 from parking_app.views.components.pildora_conexion import PildoraConexion
-from parking_app.views.components.tarjeta_cajon import TarjetaCajon
+from parking_app.views.components.tarjeta_cajon import TarjetaCajon, leyenda_estados
 
 RUTA = "/ocupacion"
 
 
 def _leyenda() -> ft.Row:
-    elementos = []
-    for estado in EstadoCajon:
-        elementos.append(
-            ft.Row(
-                tight=True,
-                spacing=6,
-                controls=[
-                    ft.Container(
-                        width=12,
-                        height=12,
-                        border_radius=6,
-                        bgcolor=theme.colores_estado(estado).acento,
-                    ),
-                    ft.Text(TEXTOS_ESTADO[estado], size=13, color=theme.TEXTO_SECUNDARIO),
-                ],
-            )
-        )
-    return ft.Row(wrap=True, spacing=16, run_spacing=8, controls=elementos)
+    return leyenda_estados(EstadoCajon, TEXTOS_ESTADO)
 
 
 def _zona_inferior() -> ft.Row:
@@ -105,6 +88,34 @@ def _zona_inferior() -> ft.Row:
         ],
     )
 
+
+def _indicacion_reservar() -> ft.Container:
+    """"Toca un cajón libre para reservarlo" (con "libre" en el color del estado)."""
+    return ft.Container(
+        bgcolor=theme.MAPA_FONDO,
+        border=ft.Border.all(1, theme.BORDE_CAMPO),
+        border_radius=theme.RADIO_CAMPO,
+        padding=ft.Padding.symmetric(vertical=12, horizontal=16),
+        content=ft.Row(
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=8,
+            controls=[
+                ft.Icon(ft.Icons.TOUCH_APP_OUTLINED, size=18, color=theme.VERDE_AZULADO),
+                ft.Text(
+                    spans=[
+                        ft.TextSpan("Toca un cajón "),
+                        ft.TextSpan("libre", style=ft.TextStyle(
+                            weight=ft.FontWeight.BOLD,
+                            color=theme.colores_estado("libre").acento)),
+                        ft.TextSpan(" para reservarlo"),
+                    ],
+                    size=14,
+                    color=theme.TEXTO,
+                ),
+            ],
+        ),
+    )
+
 # Clase representativa para construir la interfaz para visualizar la ocupación en tiempo real de los cajones de estacionamiento
 # consiste en obtener el encabezado enviado por el ESP32, el cual Muestra el encabezado ("Ocupación de cajones" y cuántos cajones están libres), 
 # la píldora de conexión, la leyenda de colores, el mapa con los 4 cajones
@@ -120,7 +131,10 @@ class OcupacionView:
 
         self._subtitulo = ft.Text(size=13, color=theme.TEXTO_SECUNDARIO)
         self._pildora = PildoraConexion()
-        self._tarjetas = [TarjetaCajon(c.etiqueta) for c in vm.cajones]
+        # Tocar un cajón libre abre la reserva (botón invisible sobre la tarjeta).
+        self._tarjetas = [
+            TarjetaCajon(c.etiqueta, on_click=self._al_tocar(c.etiqueta)) for c in vm.cajones
+        ]
         self._actualizado = ft.Text(size=13, color=theme.TEXTO_SECUNDARIO)
 
         encabezado = ft.Row(
@@ -185,6 +199,8 @@ class OcupacionView:
                                     self._actualizado,
                                 ],
                             ),
+                            _indicacion_reservar(),
+                            ft.Container(height=4),
                         ],
                     ),
                 ),
@@ -231,10 +247,16 @@ class OcupacionView:
         self._subtitulo.value = vm.texto_libres
         self._pildora.sincronizar(vm.estado_conexion, vm.texto_conexion)
         for tarjeta, cajon in zip(self._tarjetas, vm.cajones, strict=True):
-            tarjeta.sincronizar(cajon.estado, cajon.texto_estado)
+            tarjeta.sincronizar(cajon.estado, cajon.texto_estado, tocable=cajon.seleccionable)
         self._actualizado.value = vm.texto_actualizado
 
     # --- View -> ViewModel ---
+
+    def _al_tocar(self, etiqueta: str):
+        async def manejar(_e: ft.Event) -> None:
+            await self._vm.reservar(etiqueta)
+
+        return manejar
 
     async def _on_inicio(self, _e: ft.Event) -> None:
         await self._vm.ir_a_inicio()

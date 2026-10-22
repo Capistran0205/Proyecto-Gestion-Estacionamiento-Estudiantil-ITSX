@@ -2,8 +2,12 @@ import asyncio
 import threading
 from unittest.mock import MagicMock
 
-from parking_app.models.cajon_estacionamiento import CajonEstacionamiento, EstadoCajon
-from parking_app.models.evento_ocupacion import EventoOcupacion
+from parking_app.models.cajon_estacionamiento import (
+    CajonEstacionamiento,
+    EstadoCajon,
+    EstadoSistema,
+)
+from parking_app.models.evento_ocupacion import EventoOcupacion, EventoSistema
 from parking_app.services.auth_service import CredencialesMqtt
 from parking_app.services.cajones_service import CajonesNoDisponiblesError
 from parking_app.services.mqtt_service import EstadoConexion
@@ -59,6 +63,10 @@ def _callbacks(mqtt):
 
 def _evento(modulo, estado):
     return EventoOcupacion(id_modulo=modulo, estado=estado)
+
+
+def _sistema(modulo, estado):
+    return EventoSistema(id_modulo=modulo, estado=estado)
 
 
 def _estados(vm):
@@ -119,14 +127,14 @@ def test_evento_previo_al_snapshot_no_se_pisa():
         vm, cajones, _, _ = _vm()
 
         def snapshot_con_evento_previo():
-            # Un evento MQTT llega mientras la consulta a Supabase sigue en curso.
-            vm._recibir_evento(_evento(1, EstadoCajon.RESERVADO))
+            # Mensajes MQTT que llegan mientras la consulta a Supabase sigue en curso.
+            vm._recibir_evento(_evento(1, EstadoCajon.OCUPADO))
+            vm._recibir_sistema(_sistema(2, EstadoSistema.RESERVADO))
             return _snapshot(*[EstadoCajon.LIBRE] * 4)
 
         cajones.obtener_estado_actual.side_effect = snapshot_con_evento_previo
         await vm.iniciar()
-        assert _estados(vm)[0] is EstadoCajon.RESERVADO
-        assert _estados(vm)[1] is EstadoCajon.LIBRE
+        assert _estados(vm)[:3] == [EstadoCajon.OCUPADO, EstadoCajon.RESERVADO, EstadoCajon.LIBRE]
         vm.detener()
 
     asyncio.run(escenario())
@@ -316,6 +324,116 @@ def test_detener_cancela_la_resincronizacion_en_curso():
 
         assert tarea.cancelled()
         mqtt.conectar.assert_called_once()
+
+    asyncio.run(escenario())
+
+
+# --- Estado efectivo (sensor + sistema), Fase 2 ---
+
+def test_estado_efectivo_combina_sensor_y_sistema():
+    vm, _, _, _ = _vm()
+    for modulo in range(1, 5):
+        vm._recibir_evento(_evento(modulo, EstadoCajon.LIBRE))
+    vm._recibir_sistema(_sistema(1, EstadoSistema.RESERVADO))
+    vm._recibir_sistema(_sistema(2, EstadoSistema.BLOQUEADO))
+    vm._recibir_sistema(_sistema(3, EstadoSistema.RESERVADO))
+    vm._recibir_evento(_evento(3, EstadoCajon.OCUPADO))  # la lectura física manda
+
+    assert _estados(vm) == [
+        EstadoCajon.RESERVADO,
+        EstadoCajon.BLOQUEADO,
+        EstadoCajon.OCUPADO,
+        EstadoCajon.LIBRE,
+    ]
+    assert [c.seleccionable for c in vm.cajones] == [False, False, False, True]
+    assert vm.cajones[1].texto_estado == "Bloqueado"
+
+    # Al liberarse, el cajón reservado vuelve a estar disponible.
+    vm._recibir_sistema(_sistema(1, EstadoSistema.LIBERADO))
+    assert _estados(vm)[0] is EstadoCajon.LIBRE
+
+
+def test_bloqueados_cuentan_como_no_disponibles():
+    vm, _, _, _ = _vm()
+    for modulo in range(1, 5):
+        vm._recibir_evento(_evento(modulo, EstadoCajon.LIBRE))
+    vm._recibir_sistema(_sistema(1, EstadoSistema.BLOQUEADO))
+    assert (vm.libres, vm.bloqueados, vm.porcentaje_ocupado) == (3, 1, 25)
+
+
+def test_snapshot_reconstruye_sensor_y_sistema_del_estado_efectivo():
+    async def escenario():
+        vm, _, _, _ = _vm(snapshot=_snapshot(
+            EstadoCajon.RESERVADO, EstadoCajon.BLOQUEADO, EstadoCajon.OCUPADO, EstadoCajon.LIBRE,
+        ))
+        await vm.iniciar()
+        assert _estados(vm) == [
+            EstadoCajon.RESERVADO, EstadoCajon.BLOQUEADO, EstadoCajon.OCUPADO, EstadoCajon.LIBRE,
+        ]
+        # Reservado implica sensor libre: si llega un vehículo, se ve ocupado.
+        vm._recibir_evento(_evento(1, EstadoCajon.OCUPADO))
+        assert _estados(vm)[0] is EstadoCajon.OCUPADO
+        # Y al irse, vuelve a reservado (la reserva no se canceló).
+        vm._recibir_evento(_evento(1, EstadoCajon.LIBRE))
+        assert _estados(vm)[0] is EstadoCajon.RESERVADO
+        vm.detener()
+
+    asyncio.run(escenario())
+
+
+def test_nodo_caido_se_ve_no_conectado_aunque_este_reservado():
+    async def escenario():
+        vm, _, _, reloj = _vm(timeout=60)
+        await vm.iniciar()
+        vm._cambiar_estado(EstadoConexion.CONECTADO)
+        vm._recibir_sistema(_sistema(1, EstadoSistema.RESERVADO))
+        reloj.ahora += 61
+        vm._revisar_nodos()
+        assert _estados(vm)[0] is EstadoCajon.NO_CONECTADO
+        vm.detener()
+
+    asyncio.run(escenario())
+
+
+def test_mensajes_del_sistema_llegan_desde_el_hilo_de_paho():
+    async def escenario():
+        vm, _, mqtt, _ = _vm(snapshot=_snapshot(*[EstadoCajon.LIBRE] * 4))
+        await vm.iniciar()
+        al_recibir_sistema = mqtt.conectar.call_args.kwargs["al_recibir_sistema"]
+
+        hilo = threading.Thread(target=al_recibir_sistema, args=(_sistema(4, EstadoSistema.BLOQUEADO),))
+        hilo.start()
+        hilo.join()
+        await asyncio.sleep(0.05)
+
+        assert _estados(vm)[3] is EstadoCajon.BLOQUEADO
+        vm.detener()
+
+    asyncio.run(escenario())
+
+
+def test_lectura_de_sensor_con_estado_del_sistema_se_ignora():
+    vm, _, _, _ = _vm()
+    vm._recibir_evento(_evento(1, EstadoCajon.LIBRE))
+    vm._recibir_evento(_evento(1, EstadoCajon.RESERVADO))
+    assert _estados(vm)[0] is EstadoCajon.LIBRE
+
+
+def test_tras_cambiar_la_password_se_reconecta_con_la_nueva():
+    async def escenario():
+        auth = _auth()
+        vm, _, mqtt, _ = _vm(auth=auth)
+        await vm.iniciar()
+        vm._cambiar_estado(EstadoConexion.CONECTADO)  # descarta la contraseña del login
+
+        auth.credenciales_mqtt = CredencialesMqtt("ana@itsx.edu.mx", "Nueva#2026")
+        vm.reconectar_mqtt()
+
+        assert mqtt.conectar.call_count == 2
+        assert mqtt.conectar.call_args.args == ("ana@itsx.edu.mx", "Nueva#2026")
+        vm._cambiar_estado(EstadoConexion.CONECTADO)
+        assert auth.credenciales_mqtt is None
+        vm.detener()
 
     asyncio.run(escenario())
 

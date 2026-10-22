@@ -9,6 +9,7 @@ class EstadoCajon(StrEnum):
     LIBRE = "libre"
     OCUPADO = "ocupado"
     RESERVADO = "reservado"
+    BLOQUEADO = "bloqueado"
     NO_CONECTADO = "no conectado"
 
     @classmethod
@@ -21,6 +22,50 @@ class EstadoCajon(StrEnum):
     @property
     def valor_db(self) -> str:
         return self.value.replace(" ", "_")
+
+
+# Lecturas posibles de un sensor (tópico prueba1); reservado y bloqueado los decide el sistema.
+ESTADOS_SENSOR = frozenset({EstadoCajon.LIBRE, EstadoCajon.OCUPADO, EstadoCajon.NO_CONECTADO})
+
+
+# Estado que publica el backend en reserva1/{id_modulo} (mensaje retenido).
+class EstadoSistema(StrEnum):
+    BLOQUEADO = "bloqueado"
+    RESERVADO = "reservado"
+    LIBERADO = "liberado"
+
+
+def estado_efectivo(sensor: EstadoCajon, sistema: EstadoSistema) -> EstadoCajon:
+    """Misma regla que recalcular_estado_cajon en la base de datos.
+
+    1. sensor no conectado → no conectado
+    2. sensor ocupado → ocupado (la lectura física manda, RNF-01)
+    3. reservado → reservado
+    4. bloqueado → bloqueado
+    5. en otro caso → libre
+    """
+    if sensor in (EstadoCajon.NO_CONECTADO, EstadoCajon.OCUPADO):
+        return sensor
+    if sistema == EstadoSistema.RESERVADO:
+        return EstadoCajon.RESERVADO
+    if sistema == EstadoSistema.BLOQUEADO:
+        return EstadoCajon.BLOQUEADO
+    return EstadoCajon.LIBRE
+
+
+def sensor_de_estado_efectivo(estado: EstadoCajon) -> EstadoCajon:
+    """Lectura del sensor a partir del estado efectivo (exacta, por la regla de arriba)."""
+    return estado if estado in ESTADOS_SENSOR else EstadoCajon.LIBRE
+
+
+def sistema_de_estado_efectivo(estado: EstadoCajon) -> EstadoSistema:
+    """Estado del sistema que se deduce del efectivo. Si el sensor manda (ocupado o no
+    conectado) no se sabe si hay reserva: se asume liberado hasta el mensaje retenido."""
+    if estado == EstadoCajon.RESERVADO:
+        return EstadoSistema.RESERVADO
+    if estado == EstadoCajon.BLOQUEADO:
+        return EstadoSistema.BLOQUEADO
+    return EstadoSistema.LIBERADO
 
 
 def etiqueta_de_modulo(id_modulo: int) -> str:

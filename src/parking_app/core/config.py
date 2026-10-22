@@ -3,10 +3,14 @@
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import find_dotenv, load_dotenv
 
 TOPICO_OCUPACION_DEFAULT = "infraestructura/pruebaiot/prueba1"
+# Estado de reservas/bloqueos que publica el backend: un subtópico retenido por cajón.
+TOPICO_SISTEMA_BASE_DEFAULT = "infraestructura/pruebaiot/reserva1"
 DOMINIOS_CORREO_PERMITIDOS = ("itsx.edu.mx", "xalapa.tecnm.mx")
 
 # Login: bloqueo tras N intentos fallidos durante X segundos.
@@ -19,6 +23,10 @@ VIGENCIA_CODIGO_SEGUNDOS = 10 * 60
 # Maqueta física: 4 cajones fijos (C1..C4).
 NUM_CAJONES = 4
 
+# Solo para mostrar fechas y horas de las reservas; las reglas de horario viven
+# en `config_sistema` (Supabase). En Android la zona la aporta el paquete tzdata.
+ZONA_HORARIA = ZoneInfo("America/Mexico_City")
+
 
 class ConfigError(RuntimeError):
     """Falta una variable de entorno obligatoria o tiene un valor inválido."""
@@ -30,6 +38,12 @@ class ConfigMqtt:
     host: str
     port: int
     topico_ocupacion: str
+    topico_sistema_base: str = TOPICO_SISTEMA_BASE_DEFAULT
+
+    @property
+    def topico_sistema(self) -> str:
+        """Filtro de suscripción a los subtópicos de todos los cajones."""
+        return f"{self.topico_sistema_base}/+"
 
 # Clase representativa para las credenciales de configuración del servidor EMQX
 # desde la URL, la API key y el secreto de la API de EMQX, que se leen de la siguiente clase Setting
@@ -48,6 +62,7 @@ class Settings:
     mqtt_broker_host: str | None
     mqtt_broker_port: int
     mqtt_topic_ocupacion: str
+    mqtt_topic_sistema_base: str
     emqx_api_url: str | None
     emqx_api_key: str | None
     emqx_api_secret: str | None
@@ -57,7 +72,16 @@ class Settings:
     def mqtt(self) -> ConfigMqtt:
         if not self.mqtt_broker_host:
             raise ConfigError("Falta la variable de entorno MQTT_BROKER_HOST")
-        return ConfigMqtt(self.mqtt_broker_host, self.mqtt_broker_port, self.mqtt_topic_ocupacion)
+        return ConfigMqtt(
+            self.mqtt_broker_host,
+            self.mqtt_broker_port,
+            self.mqtt_topic_ocupacion,
+            self.mqtt_topic_sistema_base,
+        )
+
+    def topicos_suscripcion(self) -> list[str]:
+        """Tópicos que el ACL de cada estudiante le permite suscribir."""
+        return [self.mqtt_topic_ocupacion, f"{self.mqtt_topic_sistema_base}/+"]
 
     def emqx(self) -> ConfigEmqx:
         faltantes = [
@@ -97,7 +121,10 @@ def _entero(nombre: str, default: int) -> int:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # En desarrollo el .env está en la raíz (se busca desde el cwd). En el APK, `flet build`
+    # lo empaqueta como src/.env junto al paquete, y el cwd no es el del proyecto.
     load_dotenv(find_dotenv(usecwd=True))
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     emqx_url = _leer("EMQX_API_URL")
     return Settings(
         supabase_url=_requerida("SUPABASE_URL"),
@@ -105,6 +132,9 @@ def get_settings() -> Settings:
         mqtt_broker_host=_leer("MQTT_BROKER_HOST"),
         mqtt_broker_port=_entero("MQTT_BROKER_PORT", 1883),
         mqtt_topic_ocupacion=_leer("MQTT_TOPIC_OCUPACION") or TOPICO_OCUPACION_DEFAULT,
+        mqtt_topic_sistema_base=(
+            _leer("MQTT_TOPIC_SISTEMA_BASE") or TOPICO_SISTEMA_BASE_DEFAULT
+        ).rstrip("/"),
         emqx_api_url=emqx_url.rstrip("/") if emqx_url else None,
         emqx_api_key=_leer("EMQX_API_KEY"),
         emqx_api_secret=_leer("EMQX_API_SECRET"),

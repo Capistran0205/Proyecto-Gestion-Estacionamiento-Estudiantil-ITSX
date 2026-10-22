@@ -1,13 +1,56 @@
-# Python-generated files
+# Python
 __pycache__/
 *.py[oc]
+*.egg-info
 build/
 dist/
 wheels/
-*.egg-info
+.venv/
+.pytest_cache/
 
-# Virtual environments
-.venv
+# Node / Flet / logs
+node_modules/
+.flet/storage/
+*.log
+desktop.ini
+*.apk
+*.aab
+# Generado al correr las pruebas de las Edge Functions (deno test)
+deno.lock
 
+# Secretos
 .env
-CLAUDE.md
+.env.*
+!.env.example
+supabase/.env.*
+!supabase/.env.example
+google-services.json
+*firebase-admins*.json
+*-firebase-adminsdk-*.json
+# Llaves de firma del APK (la de depuración vive en ~/.android; que no llegue al repo)
+*.keystore
+*.jks
+key.properties
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+
+# Prototipo local
+app_escaneoqr_prueba/
+
+# Archivos de orquestación o procedimientos a seguir
+configuracion_edge_functions_supabase.md
+configuracion_firestore_fcm.md
+analisi_solucion_logquery.md
+CLAUDE.MD
+plan_desarrollo_fase1.md
+plan_desarrollo_fase2.md
+resultados.md
+Skill para Arquitecto de Software para Construir UML.md
+edge_functions_fase2.md
+
+
+.claude

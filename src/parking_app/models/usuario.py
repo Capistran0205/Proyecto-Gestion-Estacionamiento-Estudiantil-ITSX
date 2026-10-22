@@ -44,6 +44,12 @@ class Usuario:
         )
 
     @property
+    def iniciales(self) -> str:
+        """Nombre + apellido paterno: "Ana Sofía Pérez" -> "AP"."""
+        partes = [p for p in (self.nombre, self.apellido_paterno) if p]
+        return "".join(p[0] for p in partes).upper()[:2] or "?"
+
+    @property
     def activo(self) -> bool:
         return self.estado_cuenta == EstadoCuenta.ACTIVO
 

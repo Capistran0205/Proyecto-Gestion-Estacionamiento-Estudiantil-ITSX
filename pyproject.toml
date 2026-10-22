@@ -1,19 +1,25 @@
 [project]
 name = "proyecto-gestion-de-estacionamiento-estudiantil"
-version = "0.1.0"
+version = "0.2.0"
 description = "App móvil de gestión de estacionamiento estudiantil (Flet + MVVM)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "flet>=1.0.1",
+    "flet==1.0.3",
+    "flet-camera==1.0.3",
+    "flet-permission-handler==1.0.3",
+    "numpy>=2.2",
+    "opencv-python-headless==5.0.0.93",
     "paho-mqtt>=2.1.0",
     "python-dotenv>=1.2.3",
+    "segno>=1.6.6",
     "supabase>=2.31.0",
+    "tzdata>=2026.4",
 ]
 
 [dependency-groups]
 dev = [
-    "flet-desktop>=1.0.1",
+    "flet-desktop==1.0.3",
     "pytest>=8.0",
 ]
 
@@ -27,3 +33,27 @@ packages = ["src/parking_app"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.flet]
+product = "Estacionamiento Alumnos"
+company = "ITSX"
+org = "mx.edu.itsx"
+# versionCode de Android: subirlo en cada APK que se entregue (fase 1 = 1).
+build_number = 2
+
+[tool.flet.app]
+path = "src"
+module = "main"
+# Desde Flet 1.0.3 los archivos ocultos (.env) se excluyen por defecto; src/.env
+# debe viajar en el APK porque core/config.py lo carga al arrancar.
+include = [".env"]
+
+[tool.flet.android]
+split_per_abi = false
+
+# Escáner QR del administrador (Módulo C): se pide en tiempo de ejecución.
+[tool.flet.android.permission]
+"android.permission.CAMERA" = true
+
+[tool.flet.android.feature]
+"android.hardware.camera" = false

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import httpx
+from postgrest.exceptions import APIError
 from supabase import Client
 from supabase_auth.errors import (
     AuthApiError,
@@ -27,7 +28,7 @@ from parking_app.core.validadores import (
     validar_nombre_apellido_persona,
 )
 from parking_app.models.sesion import EstadoSesion, Sesion
-from parking_app.models.usuario import Usuario
+from parking_app.models.usuario import MedioTransporte, Usuario
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,31 @@ class DatosInvalidosError(AuthServiceError):
 
 class ServicioNoDisponibleError(AuthServiceError):
     """Falla de red o del servidor: no cuenta como intento fallido."""
+
+
+class PasswordActualIncorrectaError(AuthServiceError):
+    """Cambio de contraseña: la contraseña actual no coincide (suma al bloqueo)."""
+
+    def __init__(self, intentos_restantes: int) -> None:
+        super().__init__("La contraseña actual no es correcta")
+        self.intentos_restantes = intentos_restantes
+
+
+class MedioTransporteBloqueadoError(AuthServiceError):
+    """El trigger de RF-07 rechazó el cambio: hay una reserva vigente.
+
+    El mensaje es el que redactó el trigger, listo para mostrarse.
+    """
+
+
+class CambioPasswordRevertidoError(AuthServiceError):
+    """EMQX no aceptó la nueva contraseña y Supabase volvió a la anterior: nada cambió."""
+
+
+# Hint del trigger proteger_medio_transporte (script 03).
+HINT_RESERVA_ACTIVA = "RESERVA_ACTIVA"
+# check_violation: un CHECK de `usuarios` rechazó el valor.
+SQLSTATE_CHECK = "23514"
 
 
 def _no_disponible(e: Exception) -> ServicioNoDisponibleError:
@@ -236,6 +262,17 @@ class AuthService:
     def credenciales_mqtt(self) -> CredencialesMqtt | None:
         """Correo y contraseña para el broker; None tras descartar_password_mqtt()."""
         return self._credenciales_mqtt
+
+    def token_acceso(self) -> str | None:
+        """JWT vigente para llamar a las Edge Functions (supabase-py lo renueva si venció)."""
+        if not self.hay_sesion_activa:
+            return None
+        try:
+            sesion = self._cliente.auth.get_session()
+        except Exception:
+            logger.warning("No se pudo obtener la sesión de Supabase", exc_info=True)
+            return None
+        return sesion.access_token if sesion else None
 
     def descartar_password_mqtt(self) -> None:
         """Borra de memoria la contraseña del login.
@@ -425,26 +462,144 @@ class AuthService:
 
     def confirmar_nueva_password(self, nueva: str) -> None:
         """Cambia la contraseña usando la sesión temporal de verificar_codigo_recuperacion."""
+        # Los errores de contraseña dejan la sesión abierta para reintentar.
+        self._actualizar_password_auth(nueva)
+        # La sesión de recuperación es de un solo uso: no se deja abierta.
+        self._cerrar_sesion_remota()
+
+    # --- Modificación de datos (Fase 2, Módulo A) ---
+
+    def actualizar_perfil(
+        self,
+        nombre: str,
+        apellido_paterno: str,
+        apellido_materno: str,
+        medio_transporte: MedioTransporte,
+    ) -> Usuario:
+        """Guarda nombre, apellidos y medio de transporte en un solo UPDATE (RNF-05).
+
+        El correo no se envía: el trigger de la base lo protege de todos modos.
+        """
+        if self._usuario is None or not self.hay_sesion_activa:
+            raise SinSesionError("No hay una sesión activa")
+        fila = {
+            "nombre": normalizar_nombre(nombre),
+            "apellido_paterno": normalizar_nombre(apellido_paterno),
+            "apellido_materno": normalizar_nombre(apellido_materno) or None,
+            "medio_transporte": medio_transporte.value,
+        }
+        for campo in ("nombre", "apellido_paterno"):
+            if not fila[campo]:
+                raise DatosInvalidosError("Campo obligatorio", campo)
+        for campo in ("nombre", "apellido_paterno", "apellido_materno"):
+            error = validar_nombre_apellido_persona(fila[campo] or "")
+            if error:
+                raise DatosInvalidosError(error, campo)
+
+        try:
+            resultado = (
+                self._cliente.table(TABLA_USUARIOS)
+                .update(fila)
+                .eq("id_usuario", self._usuario.id_usuario)
+                .execute()
+            )
+        except APIError as e:
+            if e.hint == HINT_RESERVA_ACTIVA:
+                raise MedioTransporteBloqueadoError(e.message) from e
+            if e.code == SQLSTATE_CHECK:
+                logger.warning("Un CHECK de usuarios rechazó el perfil: %s", e.message)
+                raise DatosInvalidosError(e.message or "Datos no válidos") from e
+            if e.code == "PGRST301":  # JWT vencido o inválido
+                raise SinSesionError("La sesión expiró") from e
+            logger.warning("Supabase rechazó el perfil (%s): %s", e.code, e.message)
+            raise ServicioNoDisponibleError(str(e)) from e
+        except httpx.HTTPError as e:
+            raise ServicioNoDisponibleError(str(e)) from e
+
+        if not resultado.data:
+            # RLS filtró la fila: el UPDATE no afectó nada.
+            logger.warning("El UPDATE del perfil de %s no afectó filas", self._usuario.id_usuario)
+            raise ServicioNoDisponibleError("No se actualizó el perfil")
+        self._usuario = Usuario.from_row(resultado.data[0])
+        return self._usuario
+
+    def cambiar_password(
+        self,
+        actual: str,
+        nueva: str,
+        sincronizar_mqtt: Callable[[str, str], None],
+    ) -> None:
+        """Cambio de contraseña con sesión iniciada (RF-04, RNF-01).
+
+        1. Verifica la contraseña actual re-autenticando (suma al bloqueo de 3 intentos).
+        2. Actualiza Supabase Auth.
+        3. Actualiza EMQX con `sincronizar_mqtt(correo, nueva)`.
+        4. Si EMQX falla, Supabase vuelve a la contraseña actual y se lanza
+           CambioPasswordRevertidoError. Si ni eso se puede, la nueva queda
+           vigente: EMQX se repara al conectar (ver OcupacionViewModel).
+        """
+        correo = self._correo
+        if correo is None or not self.hay_sesion_activa:
+            raise SinSesionError("No hay una sesión activa")
+        restantes = self._intentos.segundos_restantes(correo)
+        if restantes > 0:
+            raise CuentaBloqueadaError(restantes)
+
+        try:
+            self._cliente.auth.sign_in_with_password({"email": correo, "password": actual})
+        except AuthApiError as e:
+            if e.code == "invalid_credentials":
+                intentos = self._intentos.registrar_fallo(correo)
+                if intentos == 0:
+                    raise CuentaBloqueadaError(self._intentos.segundos_restantes(correo)) from e
+                raise PasswordActualIncorrectaError(intentos) from e
+            if e.code == "over_request_rate_limit" or e.status == 429:
+                raise DemasiadasSolicitudesError("Demasiadas solicitudes") from e
+            raise _no_disponible(e) from e
+        except (AuthError, httpx.HTTPError) as e:
+            raise _no_disponible(e) from e
+        self._intentos.reiniciar(correo)
+
+        self._actualizar_password_auth(nueva)
+
+        try:
+            sincronizar_mqtt(correo, nueva)
+        except Exception:
+            logger.exception("EMQX no aceptó la nueva contraseña de %s; se revierte", correo)
+            try:
+                self._actualizar_password_auth(actual)
+            except Exception:
+                # Supabase se quedó con la nueva: es la vigente. Al reconectar con
+                # ella, el broker la rechaza y OcupacionViewModel resincroniza EMQX.
+                logger.critical(
+                    "No se pudo revertir la contraseña de %s; EMQX queda desincronizado", correo
+                )
+            else:
+                raise CambioPasswordRevertidoError(
+                    "No se pudo actualizar la credencial MQTT"
+                ) from None
+
+        # Para reconectar MQTT: paho guarda la contraseña anterior.
+        self._credenciales_mqtt = CredencialesMqtt(usuario=correo, password=nueva)
+
+    def _actualizar_password_auth(self, nueva: str) -> None:
         # AuthWeakPasswordError y AuthSessionMissingError no heredan de AuthApiError:
         # van antes que AuthError para no confundirse con una falla de red.
-        # Los errores de contraseña dejan la sesión abierta para reintentar.
         try:
             self._cliente.auth.update_user({"password": nueva})
         except AuthWeakPasswordError as e:
             raise PasswordDebilError(e.reasons) from e
         except AuthSessionMissingError as e:
-            # La librería ya no tiene la sesión temporal de verificar_codigo_recuperacion.
-            raise SinSesionError("La solicitud de recuperación expiró") from e
+            # La librería ya no tiene sesión (p. ej. la temporal de recuperación).
+            raise SinSesionError("La sesión expiró") from e
         except AuthApiError as e:
             if e.code == "same_password":
                 raise PasswordRepetidaError("La nueva contraseña debe ser distinta") from e
             if e.code == "session_not_found" or e.status in (401, 403):
-                raise SinSesionError("La solicitud de recuperación expiró") from e
+                raise SinSesionError("La sesión expiró") from e
             raise _no_disponible(e) from e
         except (AuthError, httpx.HTTPError) as e:
             raise _no_disponible(e) from e
-        # La sesión de recuperación es de un solo uso: no se deja abierta.
-        self._cerrar_sesion_remota()
 
     def cancelar_recuperacion(self) -> None:
         """Cierra la sesión temporal si el usuario abandona el flujo tras verificar el código."""

@@ -85,6 +85,321 @@ def encabezado_pagina(titulo: str, subtitulo: str, on_regresar: Handler) -> ft.C
     )
 
 
+def barra_titulo(titulo: str, on_regresar: Handler) -> ft.Row:
+    """Botón de regresar y título en la misma fila (Mi perfil, Cambiar contraseña)."""
+    return ft.Row(
+        spacing=14,
+        controls=[
+            boton_regresar(on_regresar),
+            ft.Text(titulo, size=24, weight=ft.FontWeight.BOLD, color=theme.TEXTO, expand=True),
+        ],
+    )
+
+
+class BannerExito:
+    """Recuadro verde con palomita (p. ej. "Tus datos se actualizaron correctamente")."""
+
+    def __init__(self) -> None:
+        self._texto = ft.Text(size=14, weight=ft.FontWeight.W_700, color=theme.TEXTO, expand=True)
+        self.control = ft.Container(
+            visible=False,
+            bgcolor=theme.SELECCION_FONDO,
+            border=ft.Border.all(1, theme.VERDE_AZULADO),
+            border_radius=theme.RADIO_CAMPO,
+            padding=ft.Padding.symmetric(vertical=14, horizontal=16),
+            content=ft.Row(
+                spacing=12,
+                controls=[
+                    ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, color=theme.VERDE_AZULADO, size=22),
+                    self._texto,
+                ],
+            ),
+        )
+
+    @property
+    def texto(self) -> str | None:
+        return self._texto.value if self.control.visible else None
+
+    def mostrar(self, mensaje: str | None) -> None:
+        self.control.visible = mensaje is not None
+        self._texto.value = mensaje or ""
+
+
+def opcion_navegacion(
+    icono: ft.IconData, titulo: str, subtitulo: str, on_click: Handler
+) -> ft.Container:
+    """Fila tocable con ícono, título, subtítulo y flecha (p. ej. "Cambiar contraseña")."""
+    return ft.Container(
+        border_radius=theme.RADIO_CAMPO,
+        bgcolor=theme.SUPERFICIE_ELEVADA,
+        border=ft.Border.all(1, theme.BORDE_CAMPO),
+        padding=ft.Padding.symmetric(vertical=12, horizontal=12),
+        on_click=on_click,
+        content=ft.Row(
+            spacing=14,
+            controls=[
+                ft.Container(
+                    width=38,
+                    height=38,
+                    border_radius=10,
+                    bgcolor=theme.ICONO_AZUL_FONDO,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Icon(icono, color=theme.AZUL, size=20),
+                ),
+                ft.Column(
+                    expand=True,
+                    spacing=2,
+                    controls=[
+                        ft.Text(titulo, size=15, weight=ft.FontWeight.W_700, color=theme.TEXTO),
+                        ft.Text(subtitulo, size=12, color=theme.TEXTO_SECUNDARIO),
+                    ],
+                ),
+                ft.Icon(ft.Icons.CHEVRON_RIGHT, color=theme.TEXTO_SECUNDARIO, size=20),
+            ],
+        ),
+    )
+
+
+def nota_informativa(icono: ft.IconData, texto: str) -> ft.Row:
+    """Ícono azul + texto secundario (avisos que no son errores)."""
+    return ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.START,
+        controls=[
+            ft.Icon(icono, size=18, color=theme.AZUL_CLARO),
+            ft.Text(texto, size=13, color=theme.TEXTO_SECUNDARIO, expand=True),
+        ],
+    )
+
+
+def tabla_detalle(filas: list[tuple[str, str]], destacada: str | None = None) -> ft.Container:
+    """Filas "nombre ... valor" separadas por líneas; `destacada` va en verde."""
+    controles: list[ft.Control] = []
+    for i, (nombre, valor) in enumerate(filas):
+        if i:
+            controles.append(ft.Divider(height=1, color=theme.BORDE_CAMPO))
+        controles.append(ft.Container(
+            padding=ft.Padding.symmetric(vertical=13, horizontal=16),
+            content=ft.Row(controls=[
+                ft.Text(nombre, size=13, color=theme.TEXTO_SECUNDARIO, expand=True),
+                ft.Text(valor, size=14, weight=ft.FontWeight.BOLD,
+                        color=theme.VERDE_AZULADO if nombre == destacada else theme.TEXTO),
+            ]),
+        ))
+    return ft.Container(
+        bgcolor=theme.SUPERFICIE_ELEVADA,
+        border=ft.Border.all(1, theme.BORDE_CAMPO),
+        border_radius=16,
+        content=ft.Column(spacing=0, controls=controles),
+    )
+
+
+class ProgresoPasos:
+    """"Paso n de N" y barra segmentada (sin botón de regresar)."""
+
+    def __init__(self, total: int) -> None:
+        self._total = total
+        self._texto = ft.Text(size=13, color=theme.TEXTO_SECUNDARIO)
+        self._segmentos = [
+            ft.Container(expand=True, height=4, border_radius=2, bgcolor=theme.BORDE_CAMPO)
+            for _ in range(total)
+        ]
+        self.control = ft.Column(
+            spacing=10,
+            controls=[self._texto, ft.Row(spacing=6, controls=self._segmentos)],
+        )
+
+    @property
+    def texto(self) -> str:
+        return self._texto.value
+
+    def sincronizar(self, paso: int) -> None:
+        self._texto.value = f"Paso {paso} de {self._total}"
+        for i, segmento in enumerate(self._segmentos, start=1):
+            segmento.bgcolor = theme.VERDE_AZULADO if i <= paso else theme.BORDE_CAMPO
+
+
+def boton_contorno(texto: str, on_click: Handler) -> ft.OutlinedButton:
+    """Acción secundaria neutra ("Cancelar", "Volver")."""
+    return ft.OutlinedButton(
+        content=texto,
+        height=54,
+        expand=True,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=theme.RADIO_CAMPO),
+            side=ft.BorderSide(1.5, theme.TEXTO_SECUNDARIO),
+            color=theme.TEXTO_SECUNDARIO,
+            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_700),
+        ),
+        on_click=on_click,
+    )
+
+
+def boton_peligro(texto: str, icono: ft.IconData | None, on_click: Handler) -> ft.OutlinedButton:
+    """Acción destructiva con contorno rojo ("Cancelar reserva")."""
+    return ft.OutlinedButton(
+        content=texto,
+        icon=icono,
+        icon_color=theme.COLOR_ERROR,
+        height=54,
+        expand=True,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=theme.RADIO_CAMPO),
+            side=ft.BorderSide(1.5, theme.COLOR_ERROR),
+            color=theme.COLOR_ERROR,
+            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_700),
+        ),
+        on_click=on_click,
+    )
+
+
+def boton_peligro_relleno(texto: str, on_click: Handler) -> ft.Button:
+    """Confirmación de una acción destructiva ("Sí, cancelar reserva")."""
+    return ft.Button(
+        content=texto,
+        height=54,
+        expand=True,
+        bgcolor=theme.COLOR_ERROR,
+        color=ft.Colors.WHITE,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=theme.RADIO_CAMPO),
+            text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_700),
+        ),
+        on_click=on_click,
+    )
+
+
+class BannerEstado:
+    """Recuadro con título y detalle: verde (éxito) o naranja (advertencia)."""
+
+    def __init__(self) -> None:
+        self._icono = ft.Icon(ft.Icons.CHECK_CIRCLE_OUTLINE, size=22)
+        self._titulo = ft.Text(size=15, weight=ft.FontWeight.W_700, color=theme.TEXTO)
+        self._detalle = ft.Text(size=13)
+        self.control = ft.Container(
+            visible=False,
+            border_radius=theme.RADIO_CAMPO,
+            padding=ft.Padding.symmetric(vertical=14, horizontal=16),
+            content=ft.Row(
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+                controls=[
+                    self._icono,
+                    ft.Column(expand=True, spacing=2, controls=[self._titulo, self._detalle]),
+                ],
+            ),
+        )
+
+    @property
+    def titulo(self) -> str | None:
+        return self._titulo.value if self.control.visible else None
+
+    def mostrar(self, contenido: tuple[str, str] | None, advertencia: bool = False) -> None:
+        self.control.visible = contenido is not None
+        if contenido is None:
+            return
+        self._titulo.value, self._detalle.value = contenido
+        if advertencia:
+            self.control.bgcolor = theme.ALERTA_FONDO
+            self.control.border = ft.Border.all(1, theme.ALERTA_BORDE)
+            self._icono.icon = ft.Icons.WARNING_AMBER_ROUNDED
+            self._icono.color = theme.NARANJA
+            self._detalle.color = theme.ALERTA_TEXTO
+        else:
+            self.control.bgcolor = theme.SELECCION_FONDO
+            self.control.border = ft.Border.all(1, theme.VERDE_AZULADO)
+            self._icono.icon = ft.Icons.CHECK_CIRCLE_OUTLINE
+            self._icono.color = theme.VERDE_AZULADO
+            self._detalle.color = theme.TEXTO_SECUNDARIO
+
+
+class PantallaResultado:
+    """Círculo con ícono + título + detalle y botón al pie (resultado de una acción)."""
+
+    def __init__(self, on_click: Handler) -> None:
+        self._icono = ft.Icon(ft.Icons.CHECK_ROUNDED, size=44)
+        self._circulo = ft.Container(
+            width=100, height=100, border_radius=50, alignment=ft.Alignment.CENTER,
+            content=self._icono,
+        )
+        self._titulo = ft.Text(size=26, weight=ft.FontWeight.BOLD, color=theme.TEXTO,
+                               text_align=ft.TextAlign.CENTER)
+        self._detalle = ft.Text(size=15, color=theme.TEXTO_SECUNDARIO,
+                                text_align=ft.TextAlign.CENTER)
+        self._boton = boton_principal("", on_click)
+        self.control = ft.Column(
+            expand=True,
+            visible=False,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[
+                ft.Container(
+                    expand=True,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Column(
+                        tight=True,
+                        spacing=16,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[self._circulo, ft.Container(height=4), self._titulo,
+                                  ft.Container(padding=ft.Padding.symmetric(horizontal=12),
+                                               content=self._detalle)],
+                    ),
+                ),
+                ft.Row(controls=[self._boton]),
+                ft.Container(height=8),
+            ],
+        )
+
+    @property
+    def titulo(self) -> str | None:
+        return self._titulo.value if self.control.visible else None
+
+    def mostrar(self, titulo: str, detalle: str, boton: str, icono: ft.IconData,
+                color: str, fondo: str) -> None:
+        self.control.visible = True
+        self._titulo.value = titulo
+        self._detalle.value = detalle
+        self._boton.content = boton
+        self._icono.icon = icono
+        self._icono.color = color
+        self._circulo.bgcolor = fondo
+        self._circulo.border = ft.Border.all(2, color)
+
+    def ocultar(self) -> None:
+        self.control.visible = False
+
+
+class RecuadroCajon:
+    """Recuadro con los colores del estado (bloqueado por omisión): "Cajón C1" + detalle."""
+
+    def __init__(self, estado: str = "bloqueado") -> None:
+        colores = theme.colores_estado(estado)
+        self._titulo = ft.Text(size=18, weight=ft.FontWeight.BOLD, color=theme.TEXTO)
+        self._detalle = ft.Text(size=13, color=theme.TEXTO)
+        self.control = ft.Container(
+            visible=False,
+            bgcolor=colores.fondo,
+            border=ft.Border.all(1.5, colores.acento),
+            border_radius=theme.RADIO_CAMPO,
+            padding=ft.Padding.symmetric(vertical=12, horizontal=16),
+            content=ft.Row(
+                spacing=14,
+                controls=[
+                    ft.Container(width=12, height=12, border_radius=6, bgcolor=colores.acento),
+                    ft.Column(spacing=0, expand=True, controls=[self._titulo, self._detalle]),
+                ],
+            ),
+        )
+
+    @property
+    def titulo(self) -> str | None:
+        return self._titulo.value if self.control.visible else None
+
+    def mostrar(self, etiqueta: str | None, detalle: str) -> None:
+        self.control.visible = etiqueta is not None
+        self._titulo.value = f"Cajón {etiqueta}" if etiqueta else ""
+        self._detalle.value = detalle
+
+
 class IndicadorPasos:
     """Botón de regresar + "Paso n de N" + barra segmentada de progreso."""
 
@@ -384,7 +699,10 @@ class TarjetaOpcion:
         return self._punto.visible
 
     def sincronizar(self, seleccionada: bool, resaltada: bool) -> None:
-        if seleccionada:
+        if seleccionada and resaltada:
+            # Elegida pero no permitida (p. ej. reserva activa en Mi perfil).
+            borde, fondo, color_icono = theme.NARANJA, theme.ALERTA_FONDO, theme.NARANJA
+        elif seleccionada:
             borde, fondo, color_icono = theme.VERDE_AZULADO, theme.SELECCION_FONDO, theme.VERDE_AZULADO
         elif resaltada:
             borde, fondo, color_icono = theme.NARANJA, theme.SUPERFICIE_CAMPO, theme.TEXTO_SECUNDARIO
@@ -399,7 +717,7 @@ class TarjetaOpcion:
 class ListaRequisitos:
     """Recuadro "Tu contraseña debe tener:" con cada requisito marcado al cumplirse."""
 
-    def __init__(self, textos: Sequence[str]) -> None:
+    def __init__(self, textos: Sequence[str], titulo: str = "Tu contraseña debe tener:") -> None:
         self._filas: list[tuple[ft.Icon, ft.Text]] = []
         filas: list[ft.Control] = []
         for texto in textos:
@@ -422,7 +740,7 @@ class ListaRequisitos:
                 spacing=10,
                 controls=[
                     ft.Text(
-                        "Tu contraseña debe tener:",
+                        titulo,
                         size=13,
                         weight=ft.FontWeight.W_700,
                         color=theme.TEXTO,

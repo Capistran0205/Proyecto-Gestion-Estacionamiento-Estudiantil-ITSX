@@ -37,3 +37,20 @@ uv run main.py
 ```powershell
 uv run pytest
 ```
+
+Backend (Edge Functions, sin red real; Deno se descarga con `npx`):
+
+```powershell
+cd supabase/functions
+npx -y deno@2 test --node-modules-dir=none --no-lock _tests/
+```
+
+## Fase 2: migrar el ACL de EMQX
+
+Da a los usuarios ya registrados permiso de suscribirse a `reserva1/+`.
+Sin `--aplicar` solo muestra los cambios:
+
+```powershell
+uv run python scripts/migrar_acl_emqx.py --esp32 <usuario_mqtt_de_la_esp32>
+uv run python scripts/migrar_acl_emqx.py --esp32 <usuario_mqtt_de_la_esp32> --aplicar
+```

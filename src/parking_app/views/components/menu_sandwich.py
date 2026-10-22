@@ -14,15 +14,12 @@ ALTO_PREDETERMINADO = 760
 MARGEN_VERTICAL = 48
 
 
-def _mi_perfil() -> ft.Container:
-    # "Modificación de datos de usuario" está fuera de la Fase 1: la opción se
-    # muestra como en el mockup, pero deshabilitada.
+def _mi_perfil(on_click: Handler) -> ft.Container:
     return ft.Container(
         border_radius=theme.RADIO_CAMPO,
         bgcolor=theme.SELECCION_FONDO,
         padding=ft.Padding.symmetric(vertical=12, horizontal=12),
-        opacity=0.6,
-        tooltip="Disponible próximamente",
+        on_click=on_click,
         content=ft.Row(
             spacing=14,
             controls=[
@@ -40,7 +37,7 @@ def _mi_perfil() -> ft.Container:
                     controls=[
                         ft.Text("Mi perfil", size=15, weight=ft.FontWeight.W_700,
                                 color=theme.TEXTO),
-                        ft.Text("Disponible próximamente", size=12,
+                        ft.Text("Consulta y edita tus datos", size=12,
                                 color=theme.TEXTO_SECUNDARIO),
                     ],
                 ),
@@ -51,7 +48,9 @@ def _mi_perfil() -> ft.Container:
 
 
 class MenuSandwich:
-    def __init__(self, on_cerrar: Handler, on_cerrar_sesion: Handler) -> None:
+    def __init__(
+        self, on_cerrar: Handler, on_cerrar_sesion: Handler, on_mi_perfil: Handler
+    ) -> None:
         self._iniciales = ft.Text(size=22, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE)
         self._nombre = ft.Text(size=19, weight=ft.FontWeight.BOLD, color=theme.TEXTO)
         self._numero_control = ft.Text(size=13, color=theme.TEXTO_SECUNDARIO)
@@ -111,7 +110,7 @@ class MenuSandwich:
                     self._numero_control,
                     self._correo,
                     ft.Divider(height=40, color=theme.BORDE_CAMPO),
-                    _mi_perfil(),
+                    _mi_perfil(on_mi_perfil),
                     ft.Container(expand=True),
                     self.boton_cerrar_sesion,
                 ],
