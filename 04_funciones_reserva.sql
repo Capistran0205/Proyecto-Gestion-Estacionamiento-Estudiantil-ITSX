@@ -388,7 +388,8 @@ begin
         raise exception 'Solo puedes cancelar una reserva antes de tu llegada.' using hint = 'ESTADO_INVALIDO';
     end if;
 
-    update public.reservas set estado = 'cancelada' where id_reserva = p_id_reserva;
+    update public.reservas set estado = 'cancelada', fecha_cancelacion = now()
+     where id_reserva = p_id_reserva;
     v_rc := public.recalcular_estado_cajon(v_r.id_cajon);
 
     return jsonb_build_object('id_reserva', p_id_reserva, 'estado', 'cancelada',

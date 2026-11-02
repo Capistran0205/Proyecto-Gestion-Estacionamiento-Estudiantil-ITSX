@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # Con la etiqueta del cajón embebida (cajones es legible para authenticated).
 COLUMNAS_RESERVA = (
     "id_reserva,id_cajon,codigo_qr,estado,fecha_inicio,fecha_fin,cronometro,fecha_llegada,"
-    "fecha_usuario,notificado_fin_proximo,cajones(etiqueta)"
+    "fecha_usuario,notificado_fin_proximo,fecha_cancelacion,cajones(etiqueta)"
 )
 # Administrador: sin codigo_qr (no lo necesita para la lista ni para el motivo).
 COLUMNAS_ADMIN = COLUMNAS_RESERVA.replace("codigo_qr,", "")

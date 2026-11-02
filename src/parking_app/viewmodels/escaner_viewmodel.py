@@ -241,8 +241,10 @@ class EscanerViewModel(Observable):
                 "Código ya utilizado",
                 "Este código ya se usó para registrar una llegada. Cada código sirve una sola vez."))
         if e.codigo == "QR_CANCELADO":
-            # La base no guarda la hora de cancelación: se muestra el horario reservado.
-            if reserva is not None:
+            if reserva is not None and reserva.fecha_cancelacion:
+                filas.append(("Cancelada a las", hora_local(reserva.fecha_cancelacion)))
+            elif reserva is not None:
+                # Cancelada antes de que la base guardara la hora: se muestra el horario reservado.
                 filas.append(("Horario reservado",
                               _horario(reserva.fecha_inicio, reserva.fecha_fin)))
             return Resultado(False, *RECHAZADO, filas=filas, motivo=(

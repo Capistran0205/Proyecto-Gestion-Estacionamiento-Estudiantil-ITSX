@@ -166,6 +166,9 @@ def test_qr_ajeno_no_va_al_servidor():
          "Código expirado", ("Expiró a las", "10:20")),
         ("QR_USADO", _reserva("C1", EstadoReserva.EN_USO, fecha_llegada=AHORA),
          "Código ya utilizado", ("Llegada registrada", "10:30")),
+        ("QR_CANCELADO", _reserva("C1", EstadoReserva.CANCELADA, fecha_cancelacion=AHORA),
+         "Reserva cancelada", ("Cancelada a las", "10:30")),
+        # Cancelada antes de que la base guardara la hora.
         ("QR_CANCELADO", _reserva("C1", EstadoReserva.CANCELADA),
          "Reserva cancelada", ("Horario reservado", "11:00 a 14:00")),
     ],

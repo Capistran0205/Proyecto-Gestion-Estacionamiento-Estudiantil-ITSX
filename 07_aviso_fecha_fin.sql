@@ -1,8 +1,12 @@
 -- =====================================================================
--- 07 — Aviso al llegar la fecha_fin de una reserva en uso
--- SOLO para quien ya ejecutó los scripts 02, 04 y 05 antes de este cambio.
--- (Si aún no los has ejecutado, no necesitas este script: ya lo incluyen.)
--- Se puede volver a ejecutar sin error.
+-- 07 — OBSOLETO: NO EJECUTAR.
+-- Todo lo que hacía ya está en 02, 04 y 05. Este script redefine
+-- barrido_reservas() y hay_trabajo_pendiente() con la versión anterior al
+-- RF-14 con confirmación (sin libre_desde ni las salidas): ejecutarlo después
+-- de 05 deshace esa corrección. Se conserva solo como referencia histórica;
+-- puede borrarse del repositorio.
+--
+-- 07 — Aviso al llegar la fecha_fin de una reserva en uso (versión original)
 -- =====================================================================
 
 alter table public.reservas add column if not exists notificado_fin boolean not null default false;

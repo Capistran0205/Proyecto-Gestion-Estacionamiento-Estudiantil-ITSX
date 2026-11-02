@@ -108,7 +108,7 @@ insert into public.config_sistema (clave, valor, descripcion) values
     ('cronometro_llegada_min', '60',    'Minutos para llegar desde la confirmación (RF-06)'),
     ('tolerancia_min',         '20',    'Minutos de tolerancia tras el cronómetro (RF-07)'),
     ('aviso_fin_min',          '10',    'Minutos antes del fin de la reserva en que se avisa (PROPUESTA, por confirmar)'),
-    ('bloqueo_ttl_s',          '120',   'Segundos que un estudiante puede tener bloqueado un cajón mientras reserva (PROPUESTA, por confirmar)')
+    ('bloqueo_ttl_s',          '60',    'Segundos que un estudiante puede tener bloqueado un cajón mientras reserva')
 on conflict (clave) do nothing;
 
 -- ---------------------------------------------------------------------

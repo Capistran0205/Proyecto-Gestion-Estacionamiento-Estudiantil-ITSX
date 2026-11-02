@@ -43,6 +43,8 @@ class ReservaCajon:
     fecha_usuario: datetime | None = None
     # El barrido ya marcó el fin próximo (RF-12): respaldo si no se conocen las reglas.
     aviso_fin_enviado: bool = False
+    # Cuándo se canceló o expiró antes de la llegada; None si no aplica o es anterior al dato.
+    fecha_cancelacion: datetime | None = None
 
     @property
     def etiqueta_cajon(self) -> str:
@@ -74,6 +76,7 @@ class ReservaCajon:
             fecha_usuario=_fecha(datos.get("fecha_usuario")),
             aviso_fin_enviado=bool(datos.get("notificado_fin_proximo")
                                    or datos.get("aviso_fin_enviado")),
+            fecha_cancelacion=_fecha(datos.get("fecha_cancelacion")),
         )
 
     def to_dict(self) -> dict[str, Any]:

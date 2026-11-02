@@ -39,7 +39,7 @@ product = "Estacionamiento Alumnos"
 company = "ITSX"
 org = "mx.edu.itsx"
 # versionCode de Android: subirlo en cada APK que se entregue (fase 1 = 1).
-build_number = 2
+build_number = 3
 
 [tool.flet.app]
 path = "src"

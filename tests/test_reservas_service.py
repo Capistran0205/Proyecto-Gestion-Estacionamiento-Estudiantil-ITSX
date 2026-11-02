@@ -266,11 +266,19 @@ def test_reservas_activas_ordenadas_y_sin_codigos_qr():
 
 
 def test_datos_de_un_codigo_rechazado():
-    fila = {**RESPUESTA_RESERVA, "estado": "cancelada"}
+    fila = {**RESPUESTA_RESERVA, "estado": "cancelada",
+            "fecha_cancelacion": "2026-10-06T16:30:00+00:00"}
     servicio, peticiones = _servicio(lambda r: httpx.Response(200, json=[fila]))
     reserva = servicio.reserva_por_codigo("b" * 32)
     assert peticiones[0].url.params["codigo_qr"] == f"eq.{'b' * 32}"
+    assert "fecha_cancelacion" in peticiones[0].url.params["select"]
     assert reserva.estado is EstadoReserva.CANCELADA
+    assert reserva.fecha_cancelacion.isoformat() == "2026-10-06T16:30:00+00:00"
+
+
+def test_reserva_sin_fecha_de_cancelacion():
+    servicio, _ = _servicio(lambda r: httpx.Response(200, json=[RESPUESTA_RESERVA]))
+    assert servicio.reserva_por_codigo("b" * 32).fecha_cancelacion is None
 
 
 # --- Almacenamiento local (RNF-08) ---

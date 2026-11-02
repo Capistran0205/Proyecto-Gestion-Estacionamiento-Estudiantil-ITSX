@@ -13,6 +13,13 @@ alter table public.reservas add column if not exists libre_desde timestamptz;
 comment on column public.reservas.libre_desde is
     'Reserva en uso: momento en que el sensor reportó el cajón libre (salida por confirmar, RF-14). NULL si el vehículo sigue ahí.';
 
+-- Hora en que la reserva dejó de estar vigente sin llegar a usarse: la cancela el
+-- estudiante (cancelar_reserva, en 04) o expira por la tolerancia (barrido). Se
+-- muestra al administrador al escanear un código cancelado.
+alter table public.reservas add column if not exists fecha_cancelacion timestamptz;
+comment on column public.reservas.fecha_cancelacion is
+    'Momento en que la reserva se canceló o expiró antes de la llegada. NULL en el resto de los casos.';
+
 insert into public.config_sistema (clave, valor, descripcion) values
     ('salida_confirmacion_s', '30', 'Segundos que el sensor debe seguir libre para finalizar una reserva en uso (RF-14)')
 on conflict (clave) do nothing;
@@ -227,7 +234,7 @@ begin
            and now() >= cronometro + v_tol
         for update skip locked
     ), u as (
-        update public.reservas x set estado = 'expirada'
+        update public.reservas x set estado = 'expirada', fecha_cancelacion = now()
           from e where x.id_reserva = e.id_reserva
         returning x.id_reserva, x.id_usuario_estudiante, x.id_cajon
     )
