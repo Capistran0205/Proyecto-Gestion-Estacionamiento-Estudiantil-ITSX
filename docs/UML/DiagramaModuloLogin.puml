@@ -1,0 +1,208 @@
+@startuml Login
+title Módulo — Login
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Controller" {
+  class Router <<Controller>> {
+    +ir(ruta : str)
+    -_mostrar(ruta : str)
+    -_crear_login() : Vista
+  }
+  interface Vista <<Interface>> {
+    +view : ft.View
+    +montar()
+    +desmontar()
+  }
+}
+
+package "View" {
+  class LoginView <<View>> {
+    +view : ft.View
+    -_vm : LoginViewModel
+    -_banner : BannerAlerta
+    -_correo : CampoFormulario
+    -_password : CampoFormulario
+    -_boton : ft.Control
+    -_cargando : ft.Control
+    +montar()
+    +desmontar()
+    -_on_cambio()
+    -_render()
+    -_on_iniciar_sesion(e : ft.Event)
+    -_on_recuperar(e : ft.Event)
+    -_on_registro(e : ft.Event)
+  }
+  class CampoFormulario <<View>> {
+    +campo : ft.TextField
+    +error : MensajeError
+    +control : ft.Column
+    +sincronizar(valor : str, error : str, resaltado : bool)
+  }
+  class BannerAlerta <<View>> {
+    +control : ft.Container
+    +/titulo : str
+    +mostrar(alerta : Alerta)
+  }
+}
+
+package "ViewModel" {
+  class LoginViewModel <<ViewModel>> {
+    +correo : str
+    +password : str
+    +error_correo : str
+    +error_password : str
+    +cargando : bool
+    +segundos_bloqueo : int
+    -_auth : AuthService
+    -_al_iniciar_sesion : Navegar
+    -_al_ir_a_registro : Navegar
+    -_al_ir_a_recuperar : Navegar
+    -_alerta_credenciales : Alerta
+    -_alerta_general : Alerta
+    -_cuenta_regresiva : asyncio.Task
+    +/bloqueado : bool
+    +/puede_enviar : bool
+    +/alerta : Alerta
+    +/resaltar_campos : bool
+    +set_correo(valor : str)
+    +set_password(valor : str)
+    +iniciar_sesion()
+    +ir_a_registro()
+    +ir_a_recuperar()
+    +liberar()
+    -_iniciar_cuenta_regresiva(segundos : int)
+    -_contar(correo_bloqueado : str)
+  }
+  class Alerta <<DTO>> {
+    +titulo : str
+    +detalle : str
+  }
+}
+
+package "Model" {
+  class AuthService <<Service>> {
+    -_cliente_factory : Callable
+    -_intentos : ControlIntentos
+    -_sesion : Sesion
+    -_usuario : Usuario
+    -_correo : str
+    -_credenciales_mqtt : CredencialesMqtt
+    +/sesion_actual : Sesion
+    +/hay_sesion_activa : bool
+    +/usuario_actual : Usuario
+    +/credenciales_mqtt : CredencialesMqtt
+    +segundos_bloqueo_restantes(correo : str) : int
+    +iniciar_sesion(correo : str, contraseña : str) : Sesion
+    +cerrar_sesion()
+    -_registrar_sesion(sesion : Sesion)
+    -_cerrar_registro_sesion(sesion : Sesion)
+    -_obtener_usuario(id_usuario : str) : Usuario
+  }
+  class ControlIntentos <<Service>> {
+    -_max : int
+    -_bloqueo : int
+    -_reloj : Callable
+    -_fallos : dict[str, int]
+    -_bloqueado_hasta : dict[str, float]
+    +segundos_restantes(correo : str) : int
+    +registrar_fallo(correo : str) : int
+    +reiniciar(correo : str)
+  }
+  class CredencialesMqtt <<DTO>> {
+    +usuario : str
+    +password : str
+  }
+  class Sesion <<Entity>> {
+    +id_sesion : str
+    +id_usuario : str
+    +token : str
+    +fecha_acceso : datetime
+    +fecha_cierre_sesion : datetime
+    +estado : EstadoSesion
+    +/activa : bool
+    +/huella_token : str
+    +to_row() : dict
+  }
+  class Usuario <<Entity>> {
+    +id_usuario : str
+    +nombre : str
+    +apellido_paterno : str
+    +apellido_materno : str
+    +correo_institucional : str
+    +medio_transporte : MedioTransporte
+    +rol : Rol
+    +estado_cuenta : EstadoCuenta
+    +intentos_fallidos : int
+    +tiempo_bloqueo_acceso : datetime
+    +/nombre_completo : str
+    +/activo : bool
+    +{static} from_row(row : dict) : Usuario
+  }
+  enum EstadoSesion {
+    ACTIVO
+    INACTIVO
+  }
+  class supabase_client <<Factory>> {
+    +{static} get_supabase() : Client
+  }
+  package "Excepciones" {
+    class AuthServiceError <<Exception>>
+    class CredencialesInvalidasError <<Exception>> {
+      +intentos_restantes : int
+    }
+    class CuentaBloqueadaError <<Exception>> {
+      +segundos_restantes : int
+    }
+    class CuentaInactivaError <<Exception>>
+    class CorreoNoConfirmadoError <<Exception>>
+    class DemasiadasSolicitudesError <<Exception>>
+    class ServicioNoDisponibleError <<Exception>>
+    class DatosInvalidosError <<Exception>> {
+      +campo : str
+    }
+  }
+}
+
+package "core" {
+  class Observable <<Core>> {
+    -_listeners : list
+    +add_listener(listener)
+    +remove_listener(listener)
+    +notify_listeners()
+  }
+  class validadores <<Utility>> {
+    +{static} validar_correo_institucional(correo : str) : str
+    +{static} normalizar_correo(correo : str) : str
+  }
+}
+
+Router ..> LoginViewModel : <<create>>
+Router *-- Vista
+Router --> AuthService : protege RUTAS_PROTEGIDAS
+Vista <|.. LoginView
+Observable <|-- LoginViewModel
+LoginView --> LoginViewModel : _vm / add_listener
+LoginView *-- "2" CampoFormulario
+LoginView *-- BannerAlerta
+BannerAlerta ..> Alerta
+LoginViewModel --> AuthService : _auth
+LoginViewModel ..> Alerta
+LoginViewModel ..> validadores
+LoginViewModel ..> CredencialesInvalidasError : except
+LoginViewModel ..> CuentaBloqueadaError : except
+AuthService *-- ControlIntentos : _intentos
+AuthService --> Sesion
+AuthService --> Usuario
+AuthService *-- CredencialesMqtt : en memoria
+AuthService ..> supabase_client
+Sesion --> EstadoSesion
+AuthServiceError <|-- CredencialesInvalidasError
+AuthServiceError <|-- CuentaBloqueadaError
+AuthServiceError <|-- CuentaInactivaError
+AuthServiceError <|-- CorreoNoConfirmadoError
+AuthServiceError <|-- DemasiadasSolicitudesError
+AuthServiceError <|-- ServicioNoDisponibleError
+AuthServiceError <|-- DatosInvalidosError
+@enduml

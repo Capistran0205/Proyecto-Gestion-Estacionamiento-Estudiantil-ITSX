@@ -1,0 +1,242 @@
+@startuml Ocupacion
+title Módulo — Visualización de ocupación
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Controller" {
+  class Router <<Controller>> {
+    -_ocupacion : OcupacionViewModel
+    -_crear_ocupacion() : Vista
+    -_ocupacion_de_sesion() : OcupacionViewModel
+    -_detener_ocupacion()
+  }
+}
+
+package "View" {
+  class OcupacionView <<View>> {
+    +view : ft.View
+    -_vm : OcupacionViewModel
+    -_subtitulo : ft.Text
+    -_pildora : PildoraConexion
+    -_tarjetas : list[TarjetaCajon]
+    -_actualizado : ft.Text
+    +montar()
+    +desmontar()
+    -_on_cambio()
+    -_render()
+    -_al_tocar(etiqueta : str) : Handler
+    -_on_inicio(e : ft.Event)
+  }
+  class TarjetaCajon <<View>> {
+    -_on_click : Callable
+    -_indicador : ft.Container
+    -_etiqueta : ft.Text
+    +control : ft.Container
+    +/color_acento : str
+    +/seleccionada : bool
+    +sincronizar(estado : str, texto_estado : str, tocable : bool, seleccionada : bool, atenuada : bool)
+  }
+  class PildoraConexion <<View>> {
+    +control : ft.Container
+    +/texto : str
+    +sincronizar(estado : EstadoConexion, texto : str)
+  }
+  class barra_navegacion <<View>> {
+    +{static} barra_navegacion(activa : Seccion, on_inicio, on_ocupacion) : ft.Control
+  }
+  class InicioView <<View>> {
+    -_pildora : PildoraConexion
+  }
+}
+
+package "ViewModel" {
+  class OcupacionViewModel <<ViewModel>> {
+    +estado_conexion : EstadoConexion
+    +cargando : bool
+    +error_snapshot : bool
+    -_auth : AuthService
+    -_cajones : CajonesService
+    -_mqtt : MqttService
+    -_emqx : EmqxAdminService
+    -_timeout_nodo : int
+    -_reloj : Callable[[], float]
+    -_ids : dict[str, int]
+    -_sensor : dict[str, EstadoCajon]
+    -_sistema : dict[str, EstadoSistema]
+    -_ultimo_reporte : dict[str, float]
+    -_avisos_sistema : dict[str, int]
+    -_tarea_reloj : asyncio.Task
+    +/cajones : list[CajonVista]
+    +/total : int
+    +/libres : int
+    +/ocupados : int
+    +/reservados : int
+    +/bloqueados : int
+    +/porcentaje_ocupado : int
+    +/nivel_disponibilidad : NivelDisponibilidad
+    +/texto_disponibilidad : str
+    +/en_vivo : bool
+    +/texto_conexion : str
+    +/texto_actualizado : str
+    +iniciar()
+    +detener()
+    +ir_a_inicio()
+    +cajon(etiqueta : str) : CajonVista
+    +reservar(etiqueta : str)
+    +reconectar_mqtt()
+    +avisos_del_sistema(etiqueta : str) : int
+    -_cargar_snapshot()
+    -_conectar_mqtt()
+    -_recibir_evento(evento : EventoOcupacion)
+    -_recibir_sistema(evento : EventoSistema)
+    -_cambiar_estado(estado : EstadoConexion)
+    -_sincronizar_y_reconectar(credenciales : CredencialesMqtt)
+    -_revisar_nodos()
+    -_tic()
+  }
+  class CajonVista <<DTO>> {
+    +etiqueta : str
+    +estado : EstadoCajon
+    +texto_estado : str
+    +id_cajon : int
+    +/seleccionable : bool
+  }
+  enum NivelDisponibilidad {
+    ALTA
+    MEDIA
+    LLENO
+    SIN_DATOS
+  }
+  class InicioViewModel <<ViewModel>> {
+    +ocupacion : OcupacionViewModel
+  }
+}
+
+package "Model" {
+  class CajonesService <<Service>> {
+    -_cliente_factory : Callable
+    +obtener_estado_actual() : list[CajonEstacionamiento]
+  }
+  class CajonesNoDisponiblesError <<Exception>>
+  class MqttService <<Service>> {
+    -_config_factory : Callable[[], ConfigMqtt]
+    -_cliente : mqtt.Client
+    -_topico : str
+    -_topico_sistema : str
+    -_cerrando : bool
+    +conectar(usuario : str, password : str, al_recibir, al_cambiar_estado, al_recibir_sistema)
+    +desconectar()
+    -_on_connect(cliente, userdata, flags, reason_code, properties)
+    -_on_disconnect(cliente, userdata, flags, reason_code, properties)
+    -_on_message(cliente, userdata, mensaje)
+    -_notificar(estado : EstadoConexion)
+  }
+  enum EstadoConexion {
+    CONECTANDO
+    CONECTADO
+    RECONECTANDO
+    CREDENCIALES_INVALIDAS
+    DESCONECTADO
+  }
+  class AuthService <<Service>> {
+    +/credenciales_mqtt : CredencialesMqtt
+    +descartar_password_mqtt()
+  }
+  class EmqxAdminService <<Service>> {
+    +crear_credencial(correo : str, contraseña : str)
+  }
+  class CredencialesMqtt <<DTO>> {
+    +usuario : str
+    +password : str
+  }
+  class CajonEstacionamiento <<Entity>> {
+    +id_cajon : int
+    +etiqueta : str
+    +estado_actual : EstadoCajon
+    +estado_actividad : bool
+    +fecha_registro : datetime
+    +{static} from_row(row : dict) : CajonEstacionamiento
+  }
+  class EventoOcupacion <<Entity>> {
+    +id_modulo : int
+    +estado : EstadoCajon
+    +origen_evento : str
+    +marca_tiempo : datetime
+    +/etiqueta_cajon : str
+    +{static} from_payload(payload : bytes, origen : str) : EventoOcupacion
+  }
+  class EventoSistema <<Entity>> {
+    +id_modulo : int
+    +estado : EstadoSistema
+    +marca_tiempo : datetime
+    +/etiqueta_cajon : str
+    +{static} from_payload(payload : bytes) : EventoSistema
+  }
+  class PayloadInvalidoError <<Exception>>
+  enum EstadoCajon {
+    LIBRE
+    OCUPADO
+    RESERVADO
+    BLOQUEADO
+    NO_CONECTADO
+    +{static} parse(valor) : EstadoCajon
+    +/valor_db : str
+  }
+  enum EstadoSistema {
+    BLOQUEADO
+    RESERVADO
+    LIBERADO
+  }
+  class cajon_estacionamiento <<Utility>> {
+    +{static} estado_efectivo(sensor, sistema) : EstadoCajon
+    +{static} etiqueta_de_modulo(id_modulo : int) : str
+  }
+  class ConfigMqtt <<Config>> {
+    +host : str
+    +port : int
+    +topico_ocupacion : str
+    +topico_sistema_base : str
+    +/topico_sistema : str
+  }
+  class supabase_client <<Factory>>
+}
+
+package "core" {
+  class Observable <<Core>>
+  class theme <<Utility>> {
+    +{static} colores_estado(estado : str) : ColoresEstado
+  }
+}
+
+Router "1" *-- "0..1" OcupacionViewModel : único por sesión
+Router ..> OcupacionView : <<create>>
+Observable <|-- OcupacionViewModel
+OcupacionView --> OcupacionViewModel : _vm / add_listener
+OcupacionView *-- "4" TarjetaCajon
+OcupacionView *-- PildoraConexion
+OcupacionView ..> barra_navegacion
+TarjetaCajon ..> theme
+InicioView *-- PildoraConexion
+InicioViewModel o-- OcupacionViewModel : comparte snapshot + MQTT
+OcupacionViewModel ..> CajonVista : <<create>>
+OcupacionViewModel --> NivelDisponibilidad
+OcupacionViewModel --> EstadoConexion
+OcupacionViewModel --> CajonesService : snapshot inicial
+OcupacionViewModel --> MqttService : suscripción
+OcupacionViewModel --> AuthService : credenciales_mqtt
+OcupacionViewModel --> EmqxAdminService : re-sincroniza si CREDENCIALES_INVALIDAS
+OcupacionViewModel ..> cajon_estacionamiento : estado_efectivo()
+CajonVista --> EstadoCajon
+AuthService *-- CredencialesMqtt
+CajonesService ..> supabase_client
+CajonesService ..> CajonEstacionamiento : <<create>>
+CajonesService ..> CajonesNoDisponiblesError : raise
+MqttService ..> ConfigMqtt
+MqttService ..> EventoOcupacion : <<create>> from_payload
+MqttService ..> EventoSistema : <<create>> from_payload
+MqttService ..> PayloadInvalidoError : except (descarta mensaje)
+CajonEstacionamiento --> EstadoCajon
+EventoOcupacion --> EstadoCajon
+EventoSistema --> EstadoSistema
+@enduml

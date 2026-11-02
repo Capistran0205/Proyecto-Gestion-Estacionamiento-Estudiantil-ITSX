@@ -1,0 +1,209 @@
+@startuml Registro
+title Módulo — Registro de usuarios
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Controller" {
+  class Router <<Controller>> {
+    -_crear_registro() : Vista
+  }
+}
+
+package "View" {
+  class RegistroView <<View>> {
+    +view : ft.View
+    -_vm : RegistroViewModel
+    -_banner : BannerAlerta
+    -_banner_duplicado : BannerAlerta
+    -_nombre : CampoFormulario
+    -_apellido_paterno : CampoFormulario
+    -_apellido_materno : CampoFormulario
+    -_correo : CampoFormulario
+    -_password : CampoFormulario
+    -_confirmar : CampoFormulario
+    -_opciones_transporte : dict[MedioTransporte, TarjetaOpcion]
+    -_error_transporte : MensajeError
+    -_requisitos : ListaRequisitos
+    -_pantalla_exito : PantallaExito
+    +montar()
+    +desmontar()
+    -_on_cambio()
+    -_render()
+    -_on_crear_cuenta(e : ft.Event)
+    -_on_ir_a_login(e : ft.Event)
+    -_on_ir_a_recuperar(e : ft.Event)
+  }
+  class CampoFormulario <<View>> {
+    +sincronizar(valor : str, error : str, resaltado : bool)
+  }
+  class TarjetaOpcion <<View>> {
+    +/seleccionada : bool
+    +sincronizar(seleccionada : bool, resaltada : bool)
+  }
+  class ListaRequisitos <<View>> {
+    +sincronizar(cumplidos : list[bool])
+  }
+  class PantallaExito <<View>> {
+    +detalle : ft.Text
+    +control : ft.Column
+  }
+  class BannerAlerta <<View>> {
+    +mostrar(alerta : Alerta)
+  }
+  class MensajeError <<View>> {
+    +mostrar(error : str)
+  }
+}
+
+package "ViewModel" {
+  class RegistroViewModel <<ViewModel>> {
+    +nombre : str
+    +apellido_paterno : str
+    +apellido_materno : str
+    +medio_transporte : MedioTransporte
+    +correo : str
+    +password : str
+    +confirmar_password : str
+    +errores : dict[str, str]
+    +correo_duplicado : bool
+    +cargando : bool
+    +resultado : ResultadoRegistro
+    -_auth : AuthService
+    -_emqx : EmqxAdminService
+    -_errores_servidor : dict
+    -_validar_en_vivo : bool
+    +/alerta : Alerta
+    +/requisitos_password : list[tuple[str, bool]]
+    +/puede_enviar : bool
+    +/registro_completado : bool
+    +/titulo_exito : str
+    +/detalle_exito : str
+    +error(campo : str) : str
+    +set_nombre(valor : str)
+    +set_apellido_paterno(valor : str)
+    +set_apellido_materno(valor : str)
+    +set_medio_transporte(valor : MedioTransporte)
+    +set_correo(valor : str)
+    +set_password(valor : str)
+    +set_confirmar_password(valor : str)
+    +crear_cuenta()
+    +ir_a_login()
+    +ir_a_recuperar()
+    -_aprovisionar_mqtt(correo : str)
+    -_cambio(campo : str)
+    -_validar()
+  }
+  class Alerta <<DTO>> {
+    +titulo : str
+    +detalle : str
+  }
+  class alerta <<Utility>> {
+    +{static} mensaje_password_debil(razones) : Alerta
+  }
+}
+
+package "Model" {
+  class AuthService <<Service>> {
+    +registrar(usuario : Usuario, contraseña : str) : ResultadoRegistro
+  }
+  class ResultadoRegistro <<DTO>> {
+    +usuario : Usuario
+    +requiere_confirmacion : bool
+  }
+  class EmqxAdminService <<Service>> {
+    -_config_factory : Callable[[], ConfigEmqx]
+    -_topicos_factory : Callable[[], list[str]]
+    -_transporte : httpx.BaseTransport
+    -_timeout : float
+    +crear_credencial(correo : str, contraseña : str)
+    +reglas_estudiante() : list[Regla]
+    -_asignar_acl(cliente, usuario : str, reglas : list[Regla])
+    -_cliente() : httpx.Client
+  }
+  class ConfigEmqx <<Config>> {
+    +api_url : str
+    +api_key : str
+    +api_secret : str
+  }
+  class EmqxError <<Exception>>
+  class Usuario <<Entity>> {
+    +id_usuario : str
+    +nombre : str
+    +apellido_paterno : str
+    +apellido_materno : str
+    +correo_institucional : str
+    +medio_transporte : MedioTransporte
+    +rol : Rol
+    +estado_cuenta : EstadoCuenta
+    +fecha_registro : datetime
+    +to_row() : dict
+  }
+  enum MedioTransporte {
+    MOTOCICLETA
+    VEHICULO
+  }
+  enum Rol {
+    ESTUDIANTE
+    ADMINISTRADOR
+  }
+  enum EstadoCuenta {
+    ACTIVO
+    INACTIVO
+  }
+  package "Excepciones" {
+    class AuthServiceError <<Exception>>
+    class CorreoYaRegistradoError <<Exception>>
+    class LimiteCorreosError <<Exception>>
+    class PasswordDebilError <<Exception>> {
+      +razones : list[str]
+    }
+    class DatosInvalidosError <<Exception>> {
+      +campo : str
+    }
+    class ServicioNoDisponibleError <<Exception>>
+  }
+}
+
+package "core" {
+  class Observable <<Core>>
+  class validadores <<Utility>> {
+    +{static} validar_correo_institucional(correo : str) : str
+    +{static} estado_requisitos_password(password : str) : dict
+    +{static} validar_password(password : str) : str
+    +{static} normalizar_nombre(valor : str) : str
+    +{static} validar_nombre_apellido_persona(valor : str) : str
+    +{static} validar_requerido(valor : str, nombre_campo : str) : str
+  }
+}
+
+Router ..> RegistroViewModel : <<create>>
+Router ..> RegistroView : <<create>>
+Observable <|-- RegistroViewModel
+RegistroView --> RegistroViewModel : _vm / add_listener
+RegistroView *-- "6" CampoFormulario
+RegistroView *-- "2" TarjetaOpcion
+RegistroView *-- ListaRequisitos
+RegistroView *-- PantallaExito
+RegistroView *-- "2" BannerAlerta
+RegistroView *-- MensajeError
+RegistroViewModel --> AuthService : _auth
+RegistroViewModel --> EmqxAdminService : _emqx
+RegistroViewModel ..> Usuario : <<create>>
+RegistroViewModel --> ResultadoRegistro : resultado
+RegistroViewModel ..> validadores
+RegistroViewModel ..> alerta
+RegistroViewModel ..> EmqxError : except (solo log)
+AuthService ..> ResultadoRegistro : <<create>>
+ResultadoRegistro *-- Usuario
+EmqxAdminService ..> ConfigEmqx
+EmqxAdminService ..> EmqxError : raise
+Usuario --> MedioTransporte
+Usuario --> Rol
+Usuario --> EstadoCuenta
+AuthServiceError <|-- CorreoYaRegistradoError
+AuthServiceError <|-- LimiteCorreosError
+AuthServiceError <|-- PasswordDebilError
+AuthServiceError <|-- DatosInvalidosError
+AuthServiceError <|-- ServicioNoDisponibleError
+@enduml

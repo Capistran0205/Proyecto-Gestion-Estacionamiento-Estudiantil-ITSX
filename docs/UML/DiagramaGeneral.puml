@@ -1,0 +1,221 @@
+@startuml General
+title Estacionamiento Estudiantil — Vista general (MVVM)
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Controller (Composition Root + Router)" {
+  class main <<Bootstrap>> {
+    +main(page : ft.Page)
+    +run()
+  }
+  interface Vista <<Interface>> {
+    +view : ft.View
+    +montar()
+    +desmontar()
+  }
+  class Router <<Controller>> {
+    -_activas : dict[str, Vista]
+    -_fabricas : dict[str, Callable]
+    -_ocupacion : OcupacionViewModel
+    +iniciar()
+    +ir(ruta : str)
+    -_mostrar(ruta : str)
+    -_crear_login() : Vista
+    -_crear_registro() : Vista
+    -_crear_recuperar() : Vista
+    -_crear_inicio() : Vista
+    -_crear_ocupacion() : Vista
+    -_crear_perfil() : Vista
+    -_crear_cambiar_password() : Vista
+    -_ocupacion_de_sesion() : OcupacionViewModel
+    -_es_administrador() : bool
+  }
+}
+
+package "View" {
+  class LoginView <<View>>
+  class RegistroView <<View>>
+  class RecuperarPasswordView <<View>>
+  class InicioView <<View>>
+  class OcupacionView <<View>>
+  class PerfilView <<View>>
+  class CambiarPasswordView <<View>>
+  package "Reservas (fuera de alcance de este análisis)" {
+    class ReservarView <<View>>
+    class MiReservaView <<View>>
+    class AdminReservasView <<View>>
+    class EscanerView <<View>>
+  }
+  package "components" {
+    class CampoFormulario <<View>>
+    class BannerAlerta <<View>>
+    class TarjetaCajon <<View>>
+    class PildoraConexion <<View>>
+    class MenuSandwich <<View>>
+  }
+}
+
+package "ViewModel" {
+  class LoginViewModel <<ViewModel>>
+  class RegistroViewModel <<ViewModel>>
+  class RecuperarPasswordViewModel <<ViewModel>>
+  class InicioViewModel <<ViewModel>>
+  class OcupacionViewModel <<ViewModel>>
+  class PerfilViewModel <<ViewModel>>
+  class CambiarPasswordViewModel <<ViewModel>>
+  class ReservarViewModel <<ViewModel>>
+  class MiReservaViewModel <<ViewModel>>
+  class AdminReservasViewModel <<ViewModel>>
+  class EscanerViewModel <<ViewModel>>
+  class AvisoDeCambios <<ViewModel>>
+  class Alerta <<DTO>>
+}
+
+package "Model" {
+  package "services" {
+    class AuthService <<Service>>
+    class EmqxAdminService <<Service>>
+    class CajonesService <<Service>>
+    class MqttService <<Service>>
+    class ReservasService <<Service>>
+    class AlmacenReserva <<Repository>>
+    class LectorQr <<Service>>
+    class supabase_client <<Factory>> {
+      +{static} get_supabase() : Client
+    }
+  }
+  package "models" {
+    class Usuario <<Entity>>
+    class Sesion <<Entity>>
+    class CajonEstacionamiento <<Entity>>
+    class EventoOcupacion <<Entity>>
+    class EventoSistema <<Entity>>
+    class ReservaCajon <<Entity>>
+    class HistorialOcupacion <<Entity>> <<placeholder>>
+  }
+}
+
+package "core" {
+  class Observable <<Core>> {
+    -_listeners : list[Listener]
+    +add_listener(listener)
+    +remove_listener(listener)
+    +notify_listeners()
+  }
+  class Settings <<Config>>
+  class validadores <<Utility>>
+  class theme <<Utility>>
+}
+
+' --- Arranque ---
+main ..> Router : <<create>>
+main ..> AuthService : <<create>>
+main ..> EmqxAdminService : <<create>>
+main ..> CajonesService : <<create>>
+main ..> MqttService : <<create>>
+main ..> Settings : get_settings()
+
+' --- Router ---
+Router "1" *-- "0..*" Vista : _activas
+Router o-- AuthService
+Router o-- EmqxAdminService
+Router o-- CajonesService
+Router o-- MqttService
+Router o-- ReservasService
+Router o-- AlmacenReserva
+Router ..> LoginViewModel : <<create>>
+Router ..> RegistroViewModel : <<create>>
+Router ..> RecuperarPasswordViewModel : <<create>>
+Router ..> InicioViewModel : <<create>>
+Router ..> PerfilViewModel : <<create>>
+Router ..> CambiarPasswordViewModel : <<create>>
+Router "1" *-- "0..1" OcupacionViewModel : _ocupacion (único por sesión)
+
+' --- Vista (interfaz estructural) ---
+Vista <|.. LoginView
+Vista <|.. RegistroView
+Vista <|.. RecuperarPasswordView
+Vista <|.. InicioView
+Vista <|.. OcupacionView
+Vista <|.. PerfilView
+Vista <|.. CambiarPasswordView
+Vista <|.. ReservarView
+Vista <|.. MiReservaView
+Vista <|.. AdminReservasView
+Vista <|.. EscanerView
+
+' --- Observer ---
+Observable <|-- LoginViewModel
+Observable <|-- RegistroViewModel
+Observable <|-- RecuperarPasswordViewModel
+Observable <|-- InicioViewModel
+Observable <|-- OcupacionViewModel
+Observable <|-- PerfilViewModel
+Observable <|-- CambiarPasswordViewModel
+Observable <|-- ReservarViewModel
+Observable <|-- MiReservaViewModel
+Observable <|-- AdminReservasViewModel
+Observable <|-- EscanerViewModel
+
+' --- View -> ViewModel ---
+LoginView --> LoginViewModel : _vm
+RegistroView --> RegistroViewModel : _vm
+RecuperarPasswordView --> RecuperarPasswordViewModel : _vm
+InicioView --> InicioViewModel : _vm
+OcupacionView --> OcupacionViewModel : _vm
+PerfilView --> PerfilViewModel : _vm
+CambiarPasswordView --> CambiarPasswordViewModel : _vm
+ReservarView --> ReservarViewModel : _vm
+MiReservaView --> MiReservaViewModel : _vm
+AdminReservasView --> AdminReservasViewModel : _vm
+EscanerView --> EscanerViewModel : _vm
+InicioView *-- MenuSandwich
+OcupacionView *-- "4" TarjetaCajon
+OcupacionView *-- PildoraConexion
+LoginView *-- CampoFormulario
+LoginView *-- BannerAlerta
+
+' --- ViewModel compartido ---
+InicioViewModel o-- OcupacionViewModel : ocupacion
+ReservarViewModel o-- OcupacionViewModel : ocupacion
+AvisoDeCambios o-- OcupacionViewModel
+MiReservaViewModel *-- AvisoDeCambios
+AdminReservasViewModel *-- AvisoDeCambios
+InicioViewModel *-- AvisoDeCambios
+
+' --- ViewModel -> Model ---
+LoginViewModel --> AuthService
+RegistroViewModel --> AuthService
+RegistroViewModel --> EmqxAdminService
+RecuperarPasswordViewModel --> AuthService
+RecuperarPasswordViewModel --> EmqxAdminService
+PerfilViewModel --> AuthService
+CambiarPasswordViewModel --> AuthService
+CambiarPasswordViewModel --> EmqxAdminService
+OcupacionViewModel --> AuthService
+OcupacionViewModel --> CajonesService
+OcupacionViewModel --> MqttService
+OcupacionViewModel --> EmqxAdminService
+ReservarViewModel --> ReservasService
+MiReservaViewModel --> ReservasService
+AdminReservasViewModel --> ReservasService
+EscanerViewModel --> ReservasService
+EscanerViewModel --> LectorQr
+LoginViewModel ..> Alerta
+LoginViewModel ..> validadores
+RegistroViewModel ..> validadores
+
+' --- Services -> Entities ---
+AuthService ..> supabase_client
+CajonesService ..> supabase_client
+AuthService --> Sesion : _sesion
+AuthService --> Usuario : _usuario
+CajonesService ..> CajonEstacionamiento : <<create>>
+MqttService ..> EventoOcupacion : <<create>>
+MqttService ..> EventoSistema : <<create>>
+ReservasService ..> ReservaCajon : <<create>>
+AlmacenReserva ..> ReservaCajon
+MqttService ..> Settings
+EmqxAdminService ..> Settings
+@enduml

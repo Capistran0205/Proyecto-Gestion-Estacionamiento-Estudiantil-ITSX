@@ -1,0 +1,233 @@
+@startuml ModificacionUsuarios
+title Módulo — Modificación de Usuarios (Perfil + Cambiar contraseña)
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+hide empty members
+
+package "Controller" {
+  class Router <<Controller>> {
+    -_crear_perfil() : Vista
+    -_crear_cambiar_password() : Vista
+    -_perfil_actualizado()
+    -_password_cambiada()
+  }
+}
+
+package "View" {
+  class InicioView <<View>> {
+    -_menu : MenuSandwich
+    -_on_mi_perfil(e : ft.Event)
+  }
+  class MenuSandwich <<View>> {
+    +control : ft.NavigationDrawer
+    +sincronizar(iniciales, nombre, numero_control, correo, cerrando_sesion)
+    +ajustar_altura(alto_pantalla : float)
+  }
+  class PerfilView <<View>> {
+    +view : ft.View
+    -_vm : PerfilViewModel
+    -_banner_exito : BannerExito
+    -_banner : BannerAlerta
+    -_banner_reserva : BannerAlerta
+    -_nombre : CampoFormulario
+    -_apellido_paterno : CampoFormulario
+    -_apellido_materno : CampoFormulario
+    -_correo : CampoFormulario
+    -_opciones_transporte : dict[MedioTransporte, TarjetaOpcion]
+    -_error_transporte : MensajeError
+    +montar()
+    +desmontar()
+    -_on_cambio()
+    -_render()
+    -_on_guardar(e : ft.Event)
+    -_on_regresar(e : ft.Event)
+    -_on_cambiar_password(e : ft.Event)
+  }
+  class CambiarPasswordView <<View>> {
+    +view : ft.View
+    -_vm : CambiarPasswordViewModel
+    -_banner : BannerAlerta
+    -_actual : CampoFormulario
+    -_nueva : CampoFormulario
+    -_confirmar : CampoFormulario
+    -_requisitos : ListaRequisitos
+    -_pantalla_exito : PantallaExito
+    +montar()
+    +desmontar()
+    -_on_cambio()
+    -_render()
+    -_on_actualizar(e : ft.Event)
+    -_on_regresar(e : ft.Event)
+  }
+  class CampoFormulario <<View>>
+  class TarjetaOpcion <<View>>
+  class BannerAlerta <<View>>
+  class BannerExito <<View>> {
+    +mostrar(mensaje : str)
+  }
+  class ListaRequisitos <<View>>
+  class PantallaExito <<View>>
+}
+
+package "ViewModel" {
+  class InicioViewModel <<ViewModel>> {
+    +ir_a_perfil()
+    +cerrar_sesion()
+  }
+  class PerfilViewModel <<ViewModel>> {
+    +perfil_cargado : bool
+    +nombre : str
+    +apellido_paterno : str
+    +apellido_materno : str
+    +medio_transporte : MedioTransporte
+    +errores : dict[str, str]
+    +cargando : bool
+    +guardado : bool
+    +aviso_reserva : Alerta
+    -_auth : AuthService
+    -_al_regresar : Navegar
+    -_al_ir_a_cambiar_password : Navegar
+    -_al_guardar : Navegar
+    +/correo : str
+    +/nombre_completo : str
+    +/iniciales : str
+    +/texto_rol : str
+    +/alerta : Alerta
+    +/alerta_reserva : Alerta
+    +/mensaje_exito : str
+    +/puede_guardar : bool
+    +/hay_cambios : bool
+    +error(campo : str) : str
+    +set_nombre(valor : str)
+    +set_apellido_paterno(valor : str)
+    +set_apellido_materno(valor : str)
+    +set_medio_transporte(valor : MedioTransporte)
+    +guardar()
+    +regresar()
+    +ir_a_cambiar_password()
+    -_cambio(campo : str)
+    -_validar()
+  }
+  class CambiarPasswordViewModel <<ViewModel>> {
+    +actual : str
+    +nueva : str
+    +confirmar : str
+    +error_actual : str
+    +error_nueva : str
+    +error_confirmar : str
+    +alerta : Alerta
+    +cargando : bool
+    +completado : bool
+    -_auth : AuthService
+    -_emqx : EmqxAdminService
+    -_al_regresar : Navegar
+    -_al_cambiar : Navegar
+    +/correo : str
+    +/requisitos_password : list[tuple[str, bool]]
+    +/puede_enviar : bool
+    +set_actual(valor : str)
+    +set_nueva(valor : str)
+    +set_confirmar(valor : str)
+    +actualizar()
+    +regresar()
+    -_cambio(campo : str)
+    -_validar()
+  }
+}
+
+package "Model" {
+  class AuthService <<Service>> {
+    +/usuario_actual : Usuario
+    +/correo_actual : str
+    +actualizar_perfil(nombre, apellido_paterno, apellido_materno, medio_transporte) : Usuario
+    +cambiar_password(actual : str, nueva : str, sincronizar_mqtt : Callable[[str, str], None])
+    -_actualizar_password_auth(nueva : str)
+  }
+  class EmqxAdminService <<Service>> {
+    +crear_credencial(correo : str, contraseña : str)
+  }
+  class CredencialesMqtt <<DTO>> {
+    +usuario : str
+    +password : str
+  }
+  class Usuario <<Entity>> {
+    +nombre : str
+    +apellido_paterno : str
+    +apellido_materno : str
+    +correo_institucional : str
+    +medio_transporte : MedioTransporte
+    +rol : Rol
+    +/nombre_completo : str
+    +/iniciales : str
+    +to_row() : dict
+  }
+  enum MedioTransporte {
+    MOTOCICLETA
+    VEHICULO
+  }
+  enum Rol {
+    ESTUDIANTE
+    ADMINISTRADOR
+  }
+  package "Excepciones" {
+    class AuthServiceError <<Exception>>
+    class MedioTransporteBloqueadoError <<Exception>>
+    class PasswordActualIncorrectaError <<Exception>> {
+      +intentos_restantes : int
+    }
+    class CambioPasswordRevertidoError <<Exception>>
+    class PasswordRepetidaError <<Exception>>
+    class PasswordDebilError <<Exception>>
+    class CuentaBloqueadaError <<Exception>>
+    class SinSesionError <<Exception>>
+    class DatosInvalidosError <<Exception>>
+  }
+}
+
+package "core" {
+  class Observable <<Core>>
+  class validadores <<Utility>> {
+    +{static} normalizar_nombre(valor : str) : str
+    +{static} validar_nombre_apellido_persona(valor : str) : str
+    +{static} estado_requisitos_password(password : str) : dict
+  }
+}
+
+Router ..> PerfilViewModel : <<create>>
+Router ..> CambiarPasswordViewModel : <<create>>
+InicioView *-- MenuSandwich
+InicioView --> InicioViewModel
+MenuSandwich ..> InicioView : on_mi_perfil
+InicioViewModel ..> Router : al_ir_a_perfil()
+Observable <|-- PerfilViewModel
+Observable <|-- CambiarPasswordViewModel
+PerfilView --> PerfilViewModel : _vm / add_listener
+CambiarPasswordView --> CambiarPasswordViewModel : _vm / add_listener
+PerfilView *-- "4" CampoFormulario
+PerfilView *-- "2" TarjetaOpcion
+PerfilView *-- BannerExito
+PerfilView *-- "2" BannerAlerta
+CambiarPasswordView *-- "3" CampoFormulario
+CambiarPasswordView *-- ListaRequisitos
+CambiarPasswordView *-- PantallaExito
+CambiarPasswordView *-- BannerAlerta
+PerfilViewModel ..> CambiarPasswordViewModel : navega (Navegar)
+PerfilViewModel --> AuthService : _auth
+PerfilViewModel ..> validadores
+CambiarPasswordViewModel --> AuthService : _auth
+CambiarPasswordViewModel --> EmqxAdminService : _emqx
+CambiarPasswordViewModel ..> validadores
+AuthService ..> EmqxAdminService : sincronizar_mqtt = crear_credencial
+AuthService --> Usuario : _usuario
+AuthService *-- CredencialesMqtt : se renueva tras el cambio
+Usuario --> MedioTransporte
+Usuario --> Rol
+AuthServiceError <|-- MedioTransporteBloqueadoError
+AuthServiceError <|-- PasswordActualIncorrectaError
+AuthServiceError <|-- CambioPasswordRevertidoError
+AuthServiceError <|-- PasswordRepetidaError
+AuthServiceError <|-- PasswordDebilError
+AuthServiceError <|-- CuentaBloqueadaError
+AuthServiceError <|-- SinSesionError
+AuthServiceError <|-- DatosInvalidosError
+@enduml
