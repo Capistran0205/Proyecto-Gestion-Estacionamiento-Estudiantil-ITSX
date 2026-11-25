@@ -49,8 +49,11 @@ class InicioViewModel(Observable):
         reservas_service: ReservasService | None = None,
         almacen: AlmacenReserva | None = None,
         al_ir_a_mi_reserva: Navegar | None = None,
+        antes_de_cerrar_sesion: Navegar | None = None,
     ) -> None:
         super().__init__()
+        # Tareas que necesitan la sesión abierta (p. ej. borrar el token de notificaciones).
+        self._antes_de_cerrar_sesion = antes_de_cerrar_sesion
         self._auth = auth_service
         self.ocupacion = ocupacion
         self._al_ir_a_ocupacion = al_ir_a_ocupacion
@@ -199,6 +202,11 @@ class InicioViewModel(Observable):
         self.cerrando_sesion = True
         self.notify_listeners()
         try:
+            if self._antes_de_cerrar_sesion is not None:
+                try:
+                    await llamar(self._antes_de_cerrar_sesion)
+                except Exception:
+                    logger.exception("Falló una tarea previa al cierre de sesión")
             await asyncio.to_thread(self._auth.cerrar_sesion)
         except Exception:
             # El cierre local (credenciales en memoria) ya ocurrió dentro del

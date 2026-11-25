@@ -1,0 +1,174 @@
+@startuml FlujoLogin
+title Diagrama de flujo — Módulo Login\nProceso de inicio de sesión del estudiante (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles (en orden): Estudiante | Router | LoginView |
+' LoginViewModel | AuthService (+ ControlIntentos) | Supabase
+' ============================================================
+
+|#E3F2FD|Estudiante|
+start
+:Abre la aplicación;
+
+|#F3E5F5|Router|
+:ir("login")\n_crear_login() crea LoginViewModel y LoginView;
+
+|#E8F5E9|LoginView|
+:montar(): se suscribe al ViewModel con add_listener()\ny pinta la pantalla con _render();
+:Muestra los campos de correo y contraseña,\nel enlace de recuperación y el enlace de registro;
+note right
+  RF-01: al abrir el sistema se muestra
+  la pantalla de inicio de sesión.
+end note
+
+|Estudiante|
+:Escribe su correo institucional y su contraseña;
+
+|LoginView|
+:Cada CampoFormulario envía el cambio al ViewModel;
+
+|#FFF3E0|LoginViewModel|
+:set_correo(valor) y set_password(valor)\nactualizan correo y password;
+:notify_listeners();
+
+|LoginView|
+:_on_cambio() reacciona y llama a _render()\npara refrescar campos, botón y banner;
+
+|Estudiante|
+if (¿Elige recuperar contraseña?) then (sí)
+  |LoginView|
+  :_on_recuperar(e);
+  |LoginViewModel|
+  :ir_a_recuperar()\ninvoca el callback _al_ir_a_recuperar;
+  |Router|
+  :Navega a la pantalla de recuperación de contraseña;
+  note right: RF-05
+  |Estudiante|
+  stop
+elseif (¿Elige crear cuenta?) then (sí)
+  |LoginView|
+  :_on_registro(e);
+  |LoginViewModel|
+  :ir_a_registro()\ninvoca el callback _al_ir_a_registro;
+  |Router|
+  :Navega a la pantalla de registro;
+  |Estudiante|
+  stop
+else (no, pulsa Iniciar sesión)
+  |LoginView|
+  :_on_iniciar_sesion(e) recibe el clic del botón;
+endif
+
+|LoginViewModel|
+:iniciar_sesion();
+:normalizar_correo() normaliza el correo\nvalidar_correo_institucional() valida el dominio\nSe revisa que la contraseña no esté vacía;
+
+if (¿Datos válidos y sin bloqueo vigente?) then (no)
+  :Asigna error_correo o error_password\no conserva la alerta de bloqueo activa;
+  note right
+    RNF-03: retroalimentación inmediata
+    ante errores de validación.
+  end note
+else (sí)
+  :cargando = verdadero\nnotify_listeners();
+  note right
+    RNF-01: el proceso debe responder
+    en un máximo de 3 segundos.
+  end note
+
+  |AuthService|
+  :iniciar_sesion(correo, contraseña)\nConsulta ControlIntentos.segundos_restantes(correo);
+
+  if (¿Bloqueo vigente para el correo?) then (no)
+    |Supabase|
+    :sign_in_with_password(correo, contraseña);
+
+    if (¿Autenticación aceptada?) then (sí)
+      |AuthService|
+      :_obtener_usuario(id_usuario);
+      |Supabase|
+      :Lee la fila de la tabla usuarios;
+      |AuthService|
+      :Construye el Usuario con from_row();
+
+      if (¿estado_cuenta activo?) then (sí)
+        :ControlIntentos.reiniciar(correo)\nlimpia el contador de fallos;
+        :_registrar_sesion(sesion);
+        |Supabase|
+        :Inserta la fila en la tabla sesiones\ncon token y estado ACTIVO;
+        |AuthService|
+        :Conserva en memoria _sesion, _usuario,\n_correo y _credenciales_mqtt;
+        :Retorna la Sesion al ViewModel;
+
+        |LoginViewModel|
+        :cargando = falso\nInvoca el callback _al_iniciar_sesion;
+
+        |Router|
+        :ir(ruta de inicio)\nVerifica con hay_sesion_activa si la ruta está protegida;
+        :_mostrar(ruta) monta la vista de Inicio;
+        note right: RF-06
+
+        |Estudiante|
+        :Accede al menú principal del sistema;
+        stop
+      else (no)
+        |AuthService|
+        :Lanza CuentaInactivaError;
+      endif
+
+    else (no)
+      |AuthService|
+      switch (¿Motivo del rechazo de Supabase?)
+      case (Credenciales incorrectas)
+        :ControlIntentos.registrar_fallo(correo);
+        if (¿Se alcanzó el máximo de intentos?) then (sí)
+          :Se bloquea el correo por 3 minutos\nLanza CuentaBloqueadaError;
+          note right: RNF-08
+        else (no)
+          :Lanza CredencialesInvalidasError\ncon intentos_restantes;
+        endif
+      case (Correo sin confirmar)
+        :Lanza CorreoNoConfirmadoError;
+      case (Límite de solicitudes)
+        :Lanza DemasiadasSolicitudesError;
+      case (Servicio no disponible)
+        :Lanza ServicioNoDisponibleError;
+      endswitch
+    endif
+
+  else (sí)
+    |AuthService|
+    :Lanza CuentaBloqueadaError\ncon segundos_restantes;
+  endif
+
+  |LoginViewModel|
+  :Captura la excepción AuthServiceError\ncargando = falso;
+  switch (¿Tipo de excepción?)
+  case (CredencialesInvalidasError)
+    :Prepara _alerta_credenciales con los intentos restantes\nresaltar_campos = verdadero;
+    note right: RF-04 y RNF-07
+  case (CuentaBloqueadaError)
+    :_iniciar_cuenta_regresiva(segundos_restantes)\n_contar() descuenta segundos_bloqueo cada segundo;
+  case (Otro AuthServiceError)
+    :Prepara _alerta_general para cuenta inactiva,\ncorreo sin confirmar, exceso de solicitudes\no servicio no disponible;
+  endswitch
+endif
+
+|LoginView|
+:notify_listeners() → _on_cambio() → _render()\nCampoFormulario.sincronizar() muestra los errores\nBannerAlerta.mostrar(alerta) muestra el aviso;
+
+|Estudiante|
+:Visualiza el mensaje\ny puede reintentar cuando no haya bloqueo;
+stop
+
+@enduml

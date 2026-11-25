@@ -1,0 +1,171 @@
+@startuml FlujoRegistro
+title Diagrama de flujo — Módulo Registro de usuarios\nProceso de registro de un nuevo estudiante (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles (en orden): Estudiante | Router | RegistroView |
+' RegistroViewModel | AuthService | Supabase | EmqxAdminService
+' ============================================================
+
+|#E3F2FD|Estudiante|
+start
+:Elige Crear cuenta en la pantalla de Login;
+
+|#F3E5F5|Router|
+:ir("registro")\n_crear_registro() crea RegistroViewModel y RegistroView;
+
+|#E8F5E9|RegistroView|
+:montar(): se suscribe al ViewModel con add_listener()\ny pinta el formulario con _render();
+:Muestra los campos de nombre, apellidos, correo,\ncontraseña y confirmación, las tarjetas de transporte\ny la lista de requisitos de contraseña;
+
+|Estudiante|
+:Captura sus datos y elige\nAutomóvil o Motocicleta;
+
+|RegistroView|
+:Cada CampoFormulario y TarjetaOpcion\nenvía el cambio al ViewModel;
+
+|#FFF3E0|RegistroViewModel|
+:set_nombre, set_apellido_paterno, set_apellido_materno,\nset_medio_transporte, set_correo, set_password\ny set_confirmar_password llaman a _cambio(campo);
+:Si _validar_en_vivo está activo se revalida el campo\nluego notify_listeners();
+
+|RegistroView|
+:_on_cambio() llama a _render()\nCampoFormulario.sincronizar() refresca valores y errores\nListaRequisitos.sincronizar() marca los requisitos cumplidos;
+note right
+  RNF-03: retroalimentación inmediata.
+  RNF-05: requisitos de la contraseña
+  visibles mientras se escribe.
+end note
+
+|Estudiante|
+if (¿Elige ir al login?) then (sí)
+  |RegistroView|
+  :_on_ir_a_login(e);
+  |RegistroViewModel|
+  :ir_a_login() invoca el callback de navegación;
+  |Router|
+  :Navega a la pantalla de Login;
+  |Estudiante|
+  stop
+elseif (¿Elige recuperar contraseña?) then (sí)
+  |RegistroView|
+  :_on_ir_a_recuperar(e);
+  |RegistroViewModel|
+  :ir_a_recuperar() invoca el callback de navegación;
+  |Router|
+  :Navega a la pantalla de recuperación de contraseña;
+  |Estudiante|
+  stop
+else (no, pulsa Crear cuenta)
+  |RegistroView|
+  :_on_crear_cuenta(e) recibe el clic del botón;
+endif
+
+|RegistroViewModel|
+:crear_cuenta();
+:_validar() aplica validadores a cada campo\nvalidar_requerido, validar_nombre_apellido_persona\nvalidar_correo_institucional, validar_password\nSe revisa el medio de transporte\ny que la confirmación coincida con la contraseña;
+
+if (¿Todos los datos son válidos?) then (no)
+  :Llena errores por campo\nActiva _validar_en_vivo;
+  note right
+    RNF-04: correo con formato válido
+    y dominio institucional.
+  end note
+else (sí)
+  :cargando = verdadero\nnormalizar_nombre() y normalizar_correo()\nArma el Usuario con rol ESTUDIANTE\ny los datos del formulario;
+  note right: RN-03
+
+  |AuthService|
+  :registrar(usuario, contraseña);
+
+  |Supabase|
+  :sign_up(correo, contraseña, metadatos del usuario);
+
+  if (¿Supabase aceptó el registro?) then (sí)
+    |AuthService|
+    if (¿El registro abrió una sesión?) then (sí)
+      :Cierra la sesión abierta\npara que el estudiante inicie sesión de forma explícita;
+    endif
+    :Crea el ResultadoRegistro con el usuario\ny requiere_confirmacion;
+    note right: RF-04
+    :Retorna el ResultadoRegistro al ViewModel;
+
+    |RegistroViewModel|
+    :resultado = ResultadoRegistro\n_aprovisionar_mqtt(correo);
+
+    |EmqxAdminService|
+    :crear_credencial(correo, contraseña)\nreglas_estudiante() y _asignar_acl() limitan\nel acceso al tópico de ocupación;
+
+    if (¿EMQX devolvió un error?) then (sí)
+      :Lanza EmqxError;
+      |RegistroViewModel|
+      :Captura EmqxError y solo la registra en el log\nel registro continúa;
+    endif
+
+    |RegistroViewModel|
+    :cargando = falso\nregistro_completado = verdadero\nnotify_listeners();
+
+    |RegistroView|
+    :_on_cambio() → _render()\nMuestra PantallaExito con titulo_exito y detalle_exito;
+
+    |Estudiante|
+    :Revisa su bandeja para confirmar el registro\ny pulsa para ir al login;
+    note right: RN-05
+
+    |RegistroView|
+    :_on_ir_a_login(e);
+    |RegistroViewModel|
+    :ir_a_login() invoca el callback de navegación;
+    |Router|
+    :Navega a la pantalla de Login;
+    |Estudiante|
+    stop
+
+  else (no)
+    |AuthService|
+    switch (¿Motivo del rechazo?)
+    case (Correo ya registrado)
+      :Lanza CorreoYaRegistradoError;
+      note right: RF-03
+    case (Contraseña débil)
+      :Lanza PasswordDebilError con las razones;
+    case (Dato inválido)
+      :Lanza DatosInvalidosError con el campo;
+    case (Límite de correos)
+      :Lanza LimiteCorreosError;
+    case (Servicio no disponible)
+      :Lanza ServicioNoDisponibleError;
+    endswitch
+
+    |RegistroViewModel|
+    :Captura la excepción AuthServiceError\ncargando = falso;
+    switch (¿Tipo de excepción?)
+    case (CorreoYaRegistradoError)
+      :correo_duplicado = verdadero;
+    case (PasswordDebilError)
+      :alerta.mensaje_password_debil(razones)\ngenera la Alerta;
+    case (DatosInvalidosError)
+      :Guarda el mensaje en _errores_servidor\npara el campo indicado;
+    case (Otro AuthServiceError)
+      :Prepara una Alerta general\npara límite de correos o servicio no disponible;
+    endswitch
+  endif
+endif
+
+|RegistroView|
+:notify_listeners() → _on_cambio() → _render()\nCampoFormulario y MensajeError muestran los errores\nBannerAlerta.mostrar(alerta) o _banner_duplicado\nmuestran el aviso;
+note right: RNF-06
+
+|Estudiante|
+:Visualiza los mensajes\ny corrige los datos para reintentar;
+stop
+
+@enduml

@@ -40,6 +40,7 @@ CLAUDE.local.md
 
 # Prototipo local
 app_escaneoqr_prueba/
+app_fcm_prueba/
 
 # Archivos de orquestación o procedimientos a seguir
 configuracion_edge_functions_supabase.md

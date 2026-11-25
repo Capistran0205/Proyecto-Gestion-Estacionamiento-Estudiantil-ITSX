@@ -1,0 +1,325 @@
+@startuml FlujoReservaCajonEstudiante
+title Diagrama de flujo — Módulo Reserva de cajón (estudiante)\nReservar en tres pasos y seguimiento en Mi reserva (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles: Estudiante | Router | View | ViewModel |
+' ReservasService y backend | Administrador (aparece al validar el QR)
+' View y ViewModel representan ReservarView y MiReservaView
+' con sus respectivos ViewModel.
+' El flujo del administrador se detalla en
+' DiagramaFlujoModuloReservaCajonAdmin.puml
+' ============================================================
+
+|#E3F2FD|Estudiante|
+start
+:En la pantalla de Ocupación toca un cajón libre;
+
+|#F3E5F5|Router|
+:OcupacionViewModel.reservar(etiqueta) invoca al_reservar\n_ir_a_reservar(etiqueta) guarda _cajon_a_reservar\n_crear_reservar() crea ReservarViewModel con la etiqueta inicial\ny la ReservarView;
+
+|#E8F5E9|View|
+:ReservarView.montar(): se suscribe al ViewModel con add_listener()\nProgresoPasos.sincronizar(1);
+
+|#FFF3E0|ViewModel|
+:iniciar()\nConsulta si el estudiante ya tiene una reserva activa;
+
+|#ECEFF1|ReservasService y backend|
+:reserva_vigente(id_usuario)\nLectura en PostgREST con el token de acceso;
+
+if (¿Ya tiene una reserva activa?) then (sí)
+  |ViewModel|
+  :tiene_reserva_activa = verdadero\nalerta explica que ya existe una reserva\n/puede_ver_reserva = verdadero;
+  note right: RF-09 una sola reserva activa
+  |View|
+  :BannerAlerta muestra el aviso\n_on_ver_reserva(e) permite ir a Mi reserva;
+  |Estudiante|
+  stop
+endif
+
+' ============================================================
+' PASO 1 — ELEGIR CAJÓN
+' ============================================================
+repeat
+  |ViewModel|
+  :seleccionar(etiqueta)\nSolo los cajones libres son tocables\ncargando = verdadero;
+
+  |ReservasService y backend|
+  :bloquear_cajon(id_cajon)\nEdge Function bloquear-cajon;
+  note right: RF-02
+
+  if (¿El cajón pudo bloquearse?) then (sí)
+    :Devuelve el BloqueoCajon con fecha_inicio,\nfin_minimo, fin_maximo y bloqueado_hasta;
+    |ViewModel|
+    :bloqueo = BloqueoCajon\ncargando = falso;
+  else (no)
+    |ReservasService y backend|
+    :Lanza ReservaError por cajón no disponible u otro motivo;
+    |ViewModel|
+    :_error_al_bloquear(e) prepara la Alerta\ncargando = falso;
+  endif
+
+  |View|
+  :_on_cambio() → _render()\nTarjetaCajon marca el cajón elegido o BannerAlerta muestra el error;
+
+  |Estudiante|
+  :Revisa el cajón elegido\no toca otro cajón libre;
+
+repeat while (¿Hay un cajón bloqueado?) is (no) not (sí)
+
+|Estudiante|
+:Pulsa Continuar;
+|View|
+:_on_continuar(e);
+|ViewModel|
+:continuar()\npaso = HORARIO;
+
+' ============================================================
+' PASO 2 — HORARIO
+' ============================================================
+repeat
+  |View|
+  :_render() muestra la hora de inicio asignada como la siguiente hora en punto\nsin posibilidad de editarla\ny las opciones_fin entre fin_minimo y fin_maximo;
+  note right: RF-01 y RNF-04
+
+  |Estudiante|
+  :Elige la hora de fin dentro del mismo día;
+
+  |View|
+  :_on_fin(e);
+  |ViewModel|
+  :set_fin(clave)\nfin = opción elegida\nnotify_listeners();
+
+  |Estudiante|
+  if (¿Cancela el flujo de reserva?) then (sí)
+    |View|
+    :_on_cancelar(e);
+    |ViewModel|
+    :cancelar() llama a _soltar_bloqueo() y _liberar(id_cajon);
+    |ReservasService y backend|
+    :liberar_bloqueo(id_cajon)\nEl cajón queda libre en máximo 20 segundos;
+    note right: RF-03
+    |Router|
+    :Regresa a la pantalla anterior;
+    |Estudiante|
+    stop
+  else (no, pulsa Continuar)
+    |View|
+    :_on_continuar(e);
+  endif
+
+  |ViewModel|
+  :continuar()\nValida que se haya elegido la hora de fin;
+
+  if (¿El rango de horas es válido?) then (no)
+    :error_fin explica que el rango excede el horario\nde operación o la duración máxima de 15 horas;
+    note right: RF-04
+  else (sí)
+    :paso = CONFIRMAR;
+  endif
+
+repeat while (¿Se pasó a la confirmación?) is (no) not (sí)
+
+' ============================================================
+' PASO 3 — CONFIRMAR
+' ============================================================
+repeat
+  |View|
+  :Muestra el resumen del cajón, la hora de inicio, la hora de fin\ny la duración con /resumen;
+
+  |Estudiante|
+  if (¿Cancela el flujo de reserva?) then (sí)
+    |ViewModel|
+    :cancelar() llama a _soltar_bloqueo();
+    |ReservasService y backend|
+    :liberar_bloqueo(id_cajon)\nEl cajón queda libre en máximo 20 segundos;
+    note right: RF-03
+    |Estudiante|
+    stop
+  else (no, pulsa Confirmar reserva)
+    |ViewModel|
+    :confirmar()\ncargando = verdadero;
+  endif
+
+  |ReservasService y backend|
+  :crear_reserva(id_cajon, inicio, fin)\nEdge Function que aplica las reglas de la reserva;
+
+  if (¿Se creó la reserva?) then (sí)
+    :Genera el QR único de la reserva\nMarca el cajón como RESERVADO\nFija el cronómetro de llegada de una hora\nDevuelve la ReservaCajon;
+    note right: RF-05, RF-06 y RNF-05
+    |ViewModel|
+    :reserva = ReservaCajon\nAlmacenReserva.guardar(id_usuario, reserva)\nel QR queda disponible sin conexión;
+  else (no)
+    |ReservasService y backend|
+    :Lanza ReservaError por rango inválido,\nreserva activa existente u otro motivo;
+    |ViewModel|
+    :_error_al_crear(e) prepara la Alerta;
+    note right: RF-04 y RF-09
+  endif
+
+  |ViewModel|
+  :cargando = falso;
+
+repeat while (¿Reserva creada?) is (no) not (sí)
+
+|View|
+:Confirma la reserva y ofrece _on_ver_reserva(e);
+|Estudiante|
+:Pulsa ver reserva;
+|Router|
+:_crear_mi_reserva() crea o reutiliza el MiReservaViewModel\ny crea la MiReservaView;
+
+' ============================================================
+' MI RESERVA — seguimiento de la reserva
+' ============================================================
+|ViewModel|
+:MiReservaViewModel.iniciar()\npantalla = CARGANDO\nLee la reserva guardada con AlmacenReserva.leer(id_usuario);
+
+|ReservasService y backend|
+:obtener_reserva o reserva_vigente\nconsulta el estado actual en el servidor;
+
+if (¿El servidor respondió?) then (sí)
+  |ViewModel|
+  :_aplicar(servidor, id_usuario)\nconectado = verdadero\n_guardar() actualiza la copia local;
+else (no)
+  |ReservasService y backend|
+  :Lanza ReservasNoDisponiblesError con sin_red;
+  |ViewModel|
+  :conectado = falso\nSe conserva la reserva local;
+  note right: RNF-08
+endif
+
+|ViewModel|
+:pantalla = ACTIVA\nAvisoDeCambios.escuchar() y se inicia _ciclo\nque ejecuta _correr() cada _intervalo segundos;
+
+|View|
+:_render(): BannerEstado según la fase\nRecuadroCajon con el cajón y el horario\ncodigo_qr.qr_png() dibuja el QR\nSe muestra el cronómetro y los botones permitidos;
+note right: RF-05, RNF-03 y RNF-08
+
+' ---------- Ciclo de seguimiento ----------
+repeat
+  |ViewModel|
+  switch (¿Qué ocurre?)
+  case (Pasa el intervalo o cambia el cajón)
+    :actualizar() y _revisar_tiempo()\nAvisoDeCambios detecta un cambio en el estado del cajón;
+    |ReservasService y backend|
+    :obtener_reserva(id_reserva);
+    |ViewModel|
+    :_aplicar(servidor, id_usuario)\n_guardar() actualiza la copia local;
+    note right: RNF-01
+
+  case (Termina el cronómetro de llegada)
+    :fase = RETRASO\nEl banner indica el retraso y la tolerancia de 20 minutos;
+    note right
+      RF-07 y RNF-02: aviso de retraso.
+      La notificación push está en desarrollo.
+    end note
+
+  case (Vence la tolerancia sin llegada)
+    |ReservasService y backend|
+    :Cancela la reserva, invalida el QR\ny libera el cajón como libre\nNotifica al estudiante;
+    note right: RF-08
+    |ViewModel|
+    :_terminar con pantalla = EXPIRADA;
+
+  case (El administrador valida el QR)
+    |Administrador|
+    :Escanea el QR de llegada del estudiante;
+    |ReservasService y backend|
+    :confirmar_llegada(codigo_qr) registra la llegada\nDetiene el cronómetro de llegada\ne inicia el cronómetro de uso;
+    note right: RF-10 y RNF-07
+    |ViewModel|
+    :En la siguiente actualización fase = EN_USO;
+
+  case (Se aproxima el fin de la reserva)
+    :fin_proximo = verdadero\n/aviso_fin propone confirmar la salida\no extender una hora;
+    note right: RF-12
+
+  case (El estudiante extiende la estancia)
+    |Estudiante|
+    :Pulsa Extender;
+    |View|
+    :_on_extender(e);
+    |ViewModel|
+    :extender() usa _ejecutar(operacion);
+    |ReservasService y backend|
+    :extender_reserva(id_reserva)\nDevuelve la nueva fecha de fin;
+    |ViewModel|
+    :Actualiza la reserva y el cronómetro;
+
+  case (El estudiante cancela o confirma la salida)
+    |Estudiante|
+    :Pulsa Cancelar reserva o Confirmar salida;
+    |View|
+    :_on_cancelar(e) o _on_salida(e)\nSe abre la hoja de confirmación;
+    |ViewModel|
+    :pedir_cancelar() o pedir_salida()\nconfirmacion = CANCELAR o SALIDA;
+    |Estudiante|
+    if (¿Confirma la acción?) then (sí)
+      |View|
+      :_on_confirmar(e);
+      |ViewModel|
+      :confirmar_accion() usa _ejecutar(operacion);
+      |ReservasService y backend|
+      if (¿La acción es cancelar?) then (sí)
+        :cancelar_reserva(id_reserva)\nInvalida el QR y libera el cajón;
+        note right: RF-15 y RNF-03
+        |ViewModel|
+        :_terminar con pantalla = CANCELADA;
+      else (no)
+        |ReservasService y backend|
+        :confirmar_salida(id_reserva)\nLibera el cajón de inmediato;
+        note right: RF-13 y RNF-03
+        |ViewModel|
+        :_terminar con pantalla = FINALIZADA;
+      endif
+    else (no)
+      |View|
+      :_on_mantener(e);
+      |ViewModel|
+      :descartar_confirmacion()\nLa reserva sigue activa;
+    endif
+
+  case (El sensor detecta que el vehículo salió)
+    |ReservasService y backend|
+    :Libera automáticamente el cajón y lo registra;
+    note right: RF-14
+    |ViewModel|
+    :En la siguiente actualización pantalla = FINALIZADA;
+  endswitch
+
+  |View|
+  :_on_cambio() → _render()\nActualiza banner, cronómetro y botones;
+
+repeat while (¿La reserva sigue activa?) is (sí) not (no)
+
+' ---------- Cierre ----------
+|ViewModel|
+:AlmacenReserva.borrar()\nSe detiene _ciclo con liberar();
+
+|View|
+:PantallaResultado.mostrar(titulo, detalle, boton)\nSegún sea EXPIRADA, CANCELADA o FINALIZADA;
+
+|Estudiante|
+:Pulsa el botón del resultado;
+
+|View|
+:_on_resultado(e);
+|ViewModel|
+:accion_resultado();
+|Router|
+:Navega a la pantalla de Inicio;
+
+|Estudiante|
+stop
+
+@enduml

@@ -6,7 +6,7 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 import { env, envOpcional, TOPICO_SISTEMA_BASE_DEFAULT } from "./config.ts";
 import { type ConfigEmqx, publicarRetenido } from "./emqx.ts";
 import { ErrorRpc, respuestaDeError } from "./errores.ts";
-import { enviarPush } from "./fcm.ts";
+import { enviarAlDispositivo } from "./fcm.ts";
 import { COLECCION_EVENTOS, crearDocumento } from "./firestore.ts";
 import { cuentaDesdeBase64, proveedorDeToken } from "./google.ts";
 import type { CajonCatalogo, Dependencias, Destino, Manejador, Notificacion } from "./tipos.ts";
@@ -101,8 +101,9 @@ function crearDependencias(): Dependencias {
       if (tokens.length === 0) return;
       const proyecto = env("FIREBASE_PROJECT_ID");
       const accessToken = await accessTokenGoogle();
+      const borrarToken = (token: string) => supabase.from("dispositivos_fcm").delete().eq("token", token);
       await Promise.all(
-        tokens.map((token) => enviarAlDispositivo(supabase, proyecto, accessToken, token, notificacion)),
+        tokens.map((token) => enviarAlDispositivo(borrarToken, proyecto, accessToken, token, notificacion)),
       );
     },
 
@@ -132,23 +133,3 @@ async function tokensDe(supabase: SupabaseClient, destino: Destino): Promise<str
   return (data ?? []).map((d) => d.token as string);
 }
 
-/** Un reintento por dispositivo (reintentar el envío completo duplicaría avisos ya entregados). */
-async function enviarAlDispositivo(
-  supabase: SupabaseClient,
-  proyecto: string,
-  accessToken: string,
-  token: string,
-  notificacion: Notificacion,
-): Promise<void> {
-  for (let intento = 1; intento <= 2; intento++) {
-    try {
-      if ((await enviarPush(proyecto, accessToken, token, notificacion)) === "token_invalido") {
-        console.info("Token FCM inválido; se elimina");
-        await supabase.from("dispositivos_fcm").delete().eq("token", token);
-      }
-      return;
-    } catch (e) {
-      if (intento === 2) console.error(`No se pudo enviar la notificación ${notificacion.datos.tipo}:`, e);
-    }
-  }
-}

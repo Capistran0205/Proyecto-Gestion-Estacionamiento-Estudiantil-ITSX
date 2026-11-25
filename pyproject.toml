@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "flet==1.0.3",
     "flet-camera==1.0.3",
+    "flet-fcm",
     "flet-permission-handler==1.0.3",
     "numpy>=2.2",
     "opencv-python-headless==5.0.0.93",
@@ -19,9 +20,14 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "flet-cli==1.0.3",
     "flet-desktop==1.0.3",
     "pytest>=8.0",
 ]
+
+# Extensión propia de notificaciones push (FCM); vive en el repositorio.
+[tool.uv.sources]
+flet-fcm = { path = "extensiones/flet_fcm" }
 
 [build-system]
 requires = ["hatchling"]
@@ -39,7 +45,7 @@ product = "Estacionamiento Alumnos"
 company = "ITSX"
 org = "mx.edu.itsx"
 # versionCode de Android: subirlo en cada APK que se entregue (fase 1 = 1).
-build_number = 3
+build_number = 4
 
 [tool.flet.app]
 path = "src"
@@ -48,12 +54,25 @@ module = "main"
 # debe viajar en el APK porque core/config.py lo carga al arrancar.
 include = [".env"]
 
+# `flet build` instala flet-fcm desde la carpeta local (ruta relativa a la carpeta del proyecto).
+[tool.flet.dev_packages]
+flet-fcm = "extensiones/flet_fcm"
+
+# Las versiones nuevas de shared_preferences_android y jni_flutter exigen jni >= 1.1,
+# pero Flet 1.0.3 fija jni 1.0.0: sin estos topes la compilación falla ("The generated
+# bindings expect package:jni ^1.1.0") al sumar los paquetes de Firebase.
+[tool.flet.flutter.pubspec.dependency_overrides]
+shared_preferences_android = "2.4.28"
+jni_flutter = "1.0.3"
+
 [tool.flet.android]
 split_per_abi = false
 
 # Escáner QR del administrador (Módulo C): se pide en tiempo de ejecución.
 [tool.flet.android.permission]
 "android.permission.CAMERA" = true
+# Android 13+ exige este permiso para mostrar notificaciones push.
+"android.permission.POST_NOTIFICATIONS" = true
 
 [tool.flet.android.feature]
 "android.hardware.camera" = false

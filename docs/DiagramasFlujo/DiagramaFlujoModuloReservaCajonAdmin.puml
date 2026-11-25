@@ -1,0 +1,142 @@
+@startuml FlujoReservaCajonAdmin
+title Diagrama de flujo — Módulo Reserva de cajón (administrador)\nLista de reservas y validación del QR de llegada (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles: Administrador | Router | View | ViewModel |
+' ReservasService y backend
+' View y ViewModel representan AdminReservasView y EscanerView
+' con sus respectivos ViewModel.
+' ============================================================
+
+|#FCE4EC|Administrador|
+start
+:Con sesión iniciada, abre la sección de reservas desde Inicio;
+
+|#F3E5F5|Router|
+:InicioViewModel.ir_a_reservas()\n_es_administrador() verifica el rol del usuario;
+
+if (¿El usuario es administrador?) then (no)
+  :No se abre la sección de reservas;
+  note right: RNF-06 solo el administrador valida QR
+  |Administrador|
+  stop
+endif
+
+|Router|
+:_crear_admin_reservas() crea AdminReservasViewModel\ny la AdminReservasView;
+
+|#E8F5E9|View|
+:montar(): se suscribe al ViewModel con add_listener();
+
+|#FFF3E0|ViewModel|
+:iniciar(): cargando = verdadero\nSe inicia _ciclo que ejecuta _correr() cada _intervalo segundos\nAvisoDeCambios escucha los cambios de ocupación;
+
+|#ECEFF1|ReservasService y backend|
+:reglas() obtiene minutos de llegada y tolerancia\nreservas_activas() lee las reservas vigentes;
+
+|ViewModel|
+:reservas y reglas actualizadas\n_fase(r) y _limite_tolerancia(r) clasifican cada reserva\nen POR_LLEGAR, EN_TOLERANCIA o EN_USO\n/filas crea una FilaReserva por reserva;
+
+|View|
+:_render(): contadores por fase con contar(fase)\ny lista de reservas con cajón, estado y tiempo\nSi /vacia es verdadero se indica que no hay reservas;
+
+|Administrador|
+if (¿Elige escanear un QR?) then (no)
+  |View|
+  :_on_regresar(e);
+  |ViewModel|
+  :regresar()\nliberar() detiene el ciclo de actualización;
+  |Router|
+  :Navega a la pantalla de Inicio;
+  |Administrador|
+  stop
+else (sí)
+  |View|
+  :_on_escanear(e);
+  |ViewModel|
+  :escanear()\nliberar() detiene el ciclo de la lista;
+  |Router|
+  :_crear_escaner() crea EscanerViewModel\ny la EscanerView;
+endif
+
+|View|
+:EscanerView.montar()\n_preparar_camara() activa la cámara\nfase = ESCANEANDO;
+
+' ============================================================
+' ESCANEO Y VALIDACIÓN (se repite por cada código)
+' ============================================================
+repeat
+  repeat
+    |Administrador|
+    :Apunta la cámara al QR del estudiante\no escribe el código manualmente;
+
+    |View|
+    if (¿Usa la captura manual?) then (sí)
+      :_on_validar_manual(e) toma el texto del campo;
+      |ViewModel|
+      :validar(codigo);
+    else (no)
+      :_on_cuadro(e) envía cada cuadro de la cámara;
+      |ViewModel|
+      :procesar_cuadro(imagen)\nSi _analizando es falso\nLectorQr.leer(imagen) busca un código;
+      if (¿Se leyó un código del sistema?) then (sí)
+        :es_codigo_del_sistema(texto) acepta el texto\nvalidar(codigo);
+        else (no)
+        :Se descarta el cuadro\ny se sigue escaneando;
+      endif
+    endif
+
+  repeat while (¿Se obtuvo un código del sistema?) is (no) not (sí)
+
+  |ViewModel|
+  :fase = VALIDANDO\n_confirmar(codigo);
+
+  |ReservasService y backend|
+  :confirmar_llegada(codigo_qr)\nEdge Function que valida el QR;
+  note right: RNF-07 máximo de 3 segundos
+
+  if (¿El QR es válido y está vigente?) then (sí)
+    :Registra la llegada del estudiante\nDetiene el cronómetro de llegada\ne inicia el cronómetro de uso\nDevuelve la LlegadaRegistrada;
+    note right: RF-10
+    |ViewModel|
+    :_aceptado(llegada) crea el ResultadoEscaner válido\ncon nombre, medio de transporte, cajón y horario;
+  else (no)
+    |ReservasService y backend|
+    :Lanza ReservaError por QR cancelado,\nexpirado o ya utilizado;
+    |ViewModel|
+    :_rechazo(codigo, e) crea el ResultadoEscaner no válido\ncon el motivo y, si es posible,\n_buscar(codigo) consulta la reserva para mostrar sus datos;
+    note right: RF-11
+  endif
+
+  |ViewModel|
+  :fase = RESULTADO;
+
+  |View|
+  :_on_cambio() → _render()\n_construir_resultado() muestra si el QR es válido,\nel cajón, el motivo y los datos del estudiante;
+
+  |Administrador|
+  :Revisa el resultado;
+
+repeat while (¿Escanea otro código?) is (sí) not (no)
+
+|View|
+:_on_ver_reservas(e);
+|ViewModel|
+:ver_reservas()\nSe detiene la cámara con _detener_transmision();
+|Router|
+:Regresa a la lista de reservas;
+
+|Administrador|
+stop
+
+@enduml

@@ -1,0 +1,163 @@
+@startuml FlujoOcupacion
+title Diagrama de flujo — Módulo Visualización de ocupación\nSnapshot inicial, suscripción MQTT y actualización en tiempo real (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles (en orden): Estudiante | Router | OcupacionView |
+' OcupacionViewModel | CajonesService | MqttService | ESP32 y EMQX
+' ============================================================
+
+|#E3F2FD|Estudiante|
+start
+:Con sesión iniciada, abre la sección de Ocupación;
+
+|#F3E5F5|Router|
+:ir("ocupacion")\n_crear_ocupacion() obtiene el ViewModel con _ocupacion_de_sesion();
+if (¿Ya existe el ViewModel de la sesión?) then (no)
+  :Crea el OcupacionViewModel único de la sesión\ny llama a iniciar();
+  note right
+    Un solo ViewModel por sesión
+    implica una sola conexión MQTT.
+  end note
+else (sí)
+  :Reutiliza el ViewModel existente\nsin abrir otra conexión;
+endif
+:Crea la OcupacionView con ese ViewModel;
+
+|#E8F5E9|OcupacionView|
+:montar(): se suscribe al ViewModel con add_listener()\ny pinta con _render() el estado de carga;
+
+' ============================================================
+' ARRANQUE: snapshot inicial y conexión MQTT
+' ============================================================
+|#FFF3E0|OcupacionViewModel|
+:iniciar(): cargando = verdadero\n_cargar_snapshot();
+
+|#FFFDE7|CajonesService|
+:obtener_estado_actual()\nLee la tabla cajones de Supabase;
+note right: RNF-01 máximo de 5 segundos
+
+if (¿Se obtuvo el snapshot a tiempo?) then (sí)
+  :Devuelve C1 a C4 en orden como CajonEstacionamiento\nUn cajón faltante o dado de baja\nse devuelve como NO_CONECTADO\nLas filas inválidas se descartan;
+  |OcupacionViewModel|
+  :Carga el estado inicial de cada cajón\nen _sensor y _ids;
+else (no)
+  :Lanza CajonesNoDisponiblesError;
+  |OcupacionViewModel|
+  :error_snapshot = verdadero\nLa pantalla sigue funcionando\ny MQTT irá llenando los cajones;
+endif
+
+:cargando = falso\nnotify_listeners();
+:_conectar_mqtt()\nToma AuthService.credenciales_mqtt\nestado_conexion = CONECTANDO;
+:Inicia _tarea_reloj\nque ejecuta _tic() cada segundo;
+
+|#E0F2F1|MqttService|
+:conectar(usuario, password, al_recibir,\nal_cambiar_estado, al_recibir_sistema)\nConexión TLS con paho al broker EMQX;
+
+|#ECEFF1|ESP32 y EMQX|
+:EMQX valida las credenciales del estudiante\ny permite suscribirse a los tópicos de ocupación y de sistema;
+
+|MqttService|
+:_on_connect(): suscripción QoS 1\nal tópico de ocupación y al tópico del sistema\n_notificar(CONECTADO);
+
+|OcupacionViewModel|
+:_cambiar_estado(CONECTADO)\nestado_conexion = CONECTADO;
+
+|OcupacionView|
+:_on_cambio() → _render()\nTarjetaCajon.sincronizar() pinta C1 a C4\nPildoraConexion muestra En vivo\nSe muestran disponibilidad y última actualización;
+note right
+  RF-01, RF-02 y RF-03: disponibilidad actual,
+  estado de cada cajón y total disponible.
+  RNF-07: estados distinguibles por color.
+end note
+
+' ============================================================
+' TIEMPO REAL: se repite mientras la sesión esté activa
+' ============================================================
+repeat
+  |OcupacionViewModel|
+  switch (¿Qué ocurre?)
+  case (Un nodo cambia de estado)
+    |ESP32 y EMQX|
+    :El ESP32 lee los sensores infrarrojos del módulo\nCuando el cambio se mantiene estable\npublica un JSON con id_modulo y estado;
+    note right: RF-04, RF-05 y RF-09
+    :EMQX entrega el mensaje a los suscriptores;
+    |MqttService|
+    :_on_message(): EventoOcupacion.from_payload(payload, origen);
+    if (¿El mensaje tiene formato válido?) then (no)
+      :Lanza PayloadInvalidoError\nSe registra en el log y se descarta el mensaje\nlos demás cajones no se afectan;
+    else (sí)
+      :al_recibir(evento) pasa el evento al hilo\nde la interfaz con call_soon_threadsafe;
+      |OcupacionViewModel|
+      :_recibir_evento(evento)\nActualiza _sensor y _ultimo_reporte de la etiqueta\nestado_efectivo(sensor, sistema) define el estado mostrado\nRecalcula libres, ocupados y porcentaje_ocupado\nnotify_listeners();
+      note right: RF-06, RNF-02 y RNF-09
+    endif
+
+  case (Llega un mensaje del sistema)
+    |MqttService|
+    :_on_message(): EventoSistema.from_payload(payload)\nal_recibir_sistema(evento);
+    |OcupacionViewModel|
+    :_recibir_sistema(evento)\nActualiza _sistema de la etiqueta con BLOQUEADO,\nRESERVADO o LIBERADO y registra el aviso\nestado_efectivo() combina sensor y sistema\nnotify_listeners();
+
+  case (Pasa un segundo)
+    :_tic(): _revisar_nodos()\nactualiza texto_actualizado;
+    if (¿Algún nodo supera _timeout_nodo sin reportar?) then (sí)
+      :Marca ese cajón como NO_CONECTADO\ny notify_listeners();
+      note right: RF-07 y RNF-03
+    endif
+
+  case (Cambia la conexión con el broker)
+    |MqttService|
+    :_on_connect() o _on_disconnect()\n_notificar(estado);
+    |OcupacionViewModel|
+    :_cambiar_estado(estado)\nestado_conexion = estado\nLa píldora muestra En vivo, Conectando,\nReconectando, Sin acceso o Sin conexión;
+    if (¿El estado es CREDENCIALES_INVALIDAS?) then (sí)
+      :_sincronizar_y_reconectar(credenciales);
+      |ESP32 y EMQX|
+      :EmqxAdminService.crear_credencial()\nvuelve a registrar la credencial del estudiante;
+      |MqttService|
+      :Se reconecta con las credenciales sincronizadas;
+    endif
+
+  case (El estudiante toca una tarjeta)
+    |Estudiante|
+    :Toca la tarjeta de un cajón seleccionable;
+    |OcupacionView|
+    :_al_tocar(etiqueta) devuelve el manejador del clic;
+    |OcupacionViewModel|
+    :reservar(etiqueta)\nEl flujo continúa en el módulo de Reserva de cajón;
+  endswitch
+
+  |OcupacionView|
+  :Si el ViewModel notificó un cambio\n_on_cambio() llama a _render()\nactualiza tarjetas, contadores, píldora y texto_actualizado;
+
+repeat while (¿Continúa la sesión del estudiante?) is (sí) not (no)
+
+' ============================================================
+' CIERRE DE SESIÓN
+' ============================================================
+|Estudiante|
+:Cierra sesión;
+
+|Router|
+:_detener_ocupacion() libera el ViewModel de la sesión;
+
+|OcupacionViewModel|
+:detener(): cancela _tarea_reloj;
+
+|MqttService|
+:desconectar(): cierra la sesión en EMQX\nsin intentar reconectar;
+
+|Estudiante|
+stop
+
+@enduml

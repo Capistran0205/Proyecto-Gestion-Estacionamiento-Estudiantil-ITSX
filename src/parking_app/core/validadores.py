@@ -19,7 +19,7 @@ _PATRON_NOMBRE = re.compile(rf"^{PATRON_CARACTER_NOMBRE}+$")
 _PATRON_LETRA = re.compile(rf"[{_LETRAS_NOMBRE}]")
 
 _REQUISITOS_PASSWORD: tuple[tuple[str, re.Pattern[str], str], ...] = (
-    ("longitud", re.compile(r".{8,}"), "al menos 8 carácteres"),
+    ("longitud", re.compile(r".{8,}"), "al menos 8 caracteres"),
     ("mayuscula", re.compile(r"[A-ZÁÉÍÓÚÑÜ]"), "una mayúscula"),
     ("minuscula", re.compile(r"[a-záéíóúñü]"), "una minúscula"),
     ("numero", re.compile(r"\d"), "un número"),
