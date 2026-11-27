@@ -52,11 +52,13 @@ def test_password_valida():
 
 def test_password_reporta_todos_los_faltantes():
     assert requisitos_password_faltantes("abc") == [
+        "al menos 8 caracteres",
         "una mayúscula",
         "un número",
         "un carácter especial",
     ]
-    assert validar_password("abc12345") == (
+    # 8 caracteres, sin mayúscula, número ni carácter especial.
+    assert validar_password("abcdefgh") == (
         "La contraseña debe incluir una mayúscula, un número y un carácter especial"
     )
 

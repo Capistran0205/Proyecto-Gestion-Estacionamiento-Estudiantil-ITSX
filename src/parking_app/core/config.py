@@ -53,6 +53,14 @@ class ConfigEmqx:
     api_key: str
     api_secret: str
 
+# Datos de la app Android en Firebase (los de google-services.json) para iniciar FCM desde código
+@dataclass(frozen=True)
+class ConfigFirebase:
+    api_key: str
+    app_id: str
+    sender_id: str
+    project_id: str
+
 # Clase representativa asociada a todas las credenciales de configuración, desde Supabase hasta EMQX por el momento
 @dataclass(frozen=True)
 class Settings:
@@ -68,6 +76,11 @@ class Settings:
     emqx_api_secret: str | None
     # Segundos sin reportes de un nodo antes de marcarlo como "no conectado".
     nodo_timeout_segundos: int
+    # Notificaciones push: opcionales, sin ellas la app funciona igual.
+    firebase_api_key: str | None = None
+    firebase_app_id: str | None = None
+    firebase_sender_id: str | None = None
+    firebase_project_id: str | None = None
 
     def mqtt(self) -> ConfigMqtt:
         if not self.mqtt_broker_host:
@@ -96,6 +109,18 @@ class Settings:
         if faltantes:
             raise ConfigError("Faltan variables de entorno: " + ", ".join(faltantes))
         return ConfigEmqx(self.emqx_api_url, self.emqx_api_key, self.emqx_api_secret)
+
+    def firebase(self) -> ConfigFirebase | None:
+        """Datos de Firebase, o None si falta alguno (las notificaciones quedan apagadas)."""
+        valores = (
+            self.firebase_api_key,
+            self.firebase_app_id,
+            self.firebase_sender_id,
+            self.firebase_project_id,
+        )
+        if not all(valores):
+            return None
+        return ConfigFirebase(*valores)
 
 
 def _leer(nombre: str) -> str | None:
@@ -139,4 +164,8 @@ def get_settings() -> Settings:
         emqx_api_key=_leer("EMQX_API_KEY"),
         emqx_api_secret=_leer("EMQX_API_SECRET"),
         nodo_timeout_segundos=_entero("NODO_TIMEOUT_SEGUNDOS", 60),
+        firebase_api_key=_leer("FIREBASE_API_KEY"),
+        firebase_app_id=_leer("FIREBASE_APP_ID"),
+        firebase_sender_id=_leer("FIREBASE_SENDER_ID"),
+        firebase_project_id=_leer("FIREBASE_PROJECT_ID"),
     )

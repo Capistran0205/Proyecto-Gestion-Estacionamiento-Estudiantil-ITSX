@@ -161,7 +161,8 @@ def test_correo_de_otro_dominio():
 def test_requisitos_de_password_en_vivo():
     vm, _, _ = _vm()
     vm.set_password("abc1")
-    assert [ok for _, ok in vm.requisitos_password] == [True, False, True, True, False]
+    # Orden: longitud (8+), mayúscula, minúscula, número, carácter especial.
+    assert [ok for _, ok in vm.requisitos_password] == [False, False, True, True, False]
     vm.set_password(PASSWORD)
     assert all(ok for _, ok in vm.requisitos_password)
 

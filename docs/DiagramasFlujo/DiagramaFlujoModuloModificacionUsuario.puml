@@ -1,0 +1,289 @@
+@startuml FlujoModificacionUsuario
+title Diagrama de flujo — Módulo Modificación de usuarios\nPerfil del estudiante y cambio de contraseña (MVVM)
+
+skinparam shadowing false
+skinparam ActivityBackgroundColor #FFFFFF
+skinparam ActivityBorderColor #455A64
+skinparam ActivityDiamondBackgroundColor #FFFDE7
+skinparam ActivityDiamondBorderColor #455A64
+skinparam ArrowColor #455A64
+skinparam NoteBackgroundColor #FFF8E1
+skinparam NoteBorderColor #F9A825
+skinparam swimlaneTitleFontStyle bold
+
+' ============================================================
+' Carriles (en orden): Estudiante | Inicio y Router | View |
+' ViewModel | AuthService | Supabase | EmqxAdminService
+' En los carriles View y ViewModel participan PerfilView y
+' CambiarPasswordView, con sus respectivos ViewModel.
+' ============================================================
+
+|#E3F2FD|Estudiante|
+start
+:Con sesión iniciada, abre el menú lateral de Inicio\ny elige Mi perfil;
+
+|#F3E5F5|Inicio y Router|
+:MenuSandwich invoca on_mi_perfil\nInicioView._on_mi_perfil(e) → InicioViewModel.ir_a_perfil()\nRouter._crear_perfil() crea PerfilViewModel y PerfilView;
+note right: RF-01 solo con estudiante autenticado
+
+|#E8F5E9|View|
+:PerfilView.montar(): se suscribe al ViewModel con add_listener();
+
+|#FFF3E0|ViewModel|
+:Carga nombre, apellidos y medio_transporte\ndesde AuthService.usuario_actual\nperfil_cargado = verdadero;
+
+|View|
+:_render() muestra los campos de nombre y apellidos,\nlas tarjetas de transporte y el correo\ncomo campo de solo lectura;
+note right
+  RF-02 y RNF-03: el correo institucional
+  se muestra, pero no se puede editar.
+end note
+
+|Estudiante|
+if (¿Elige regresar?) then (sí)
+  |View|
+  :_on_regresar(e);
+  |ViewModel|
+  :regresar() invoca el callback _al_regresar;
+  |Inicio y Router|
+  :Navega de regreso a Inicio;
+  |Estudiante|
+  stop
+
+elseif (¿Elige cambiar la contraseña?) then (sí)
+
+  ' ==========================================================
+  ' PARTE B — CAMBIAR CONTRASEÑA
+  ' ==========================================================
+  |View|
+  :_on_cambiar_password(e);
+  |ViewModel|
+  :PerfilViewModel.ir_a_cambiar_password()\ninvoca el callback _al_ir_a_cambiar_password;
+  |Inicio y Router|
+  :Router._crear_cambiar_password() crea\nCambiarPasswordViewModel con AuthService y EmqxAdminService\ny la CambiarPasswordView;
+  |View|
+  :Muestra los campos de contraseña actual, nueva y confirmación\ny la ListaRequisitos;
+
+  repeat
+    |Estudiante|
+    :Escribe su contraseña actual, la nueva y la confirmación;
+
+    |View|
+    :CampoFormulario envía cada cambio al ViewModel;
+
+    |ViewModel|
+    :set_actual, set_nueva y set_confirmar llaman a _cambio(campo)\nSe revalida y se actualiza requisitos_password\nnotify_listeners();
+
+    |View|
+    :_on_cambio() → _render()\nListaRequisitos.sincronizar() marca los requisitos cumplidos\nCampoFormulario muestra los errores;
+    note right
+      RNF-01: formato de la nueva contraseña.
+      RNF-04: retroalimentación inmediata.
+    end note
+
+    |Estudiante|
+    if (¿Elige regresar?) then (sí)
+      |View|
+      :_on_regresar(e);
+      |ViewModel|
+      :regresar() invoca el callback _al_regresar;
+      |Inicio y Router|
+      :Navega de regreso al perfil;
+      |Estudiante|
+      stop
+    else (no, pulsa Actualizar)
+      |View|
+      :_on_actualizar(e) recibe el clic del botón;
+    endif
+
+    |ViewModel|
+    :actualizar()\n_validar(): campos requeridos, estado_requisitos_password()\ny que la confirmación coincida con la nueva;
+
+    if (¿Datos válidos?) then (no)
+      :Asigna error_actual, error_nueva o error_confirmar;
+      note right: RF-03
+    else (sí)
+      :cargando = verdadero\nactualizar() llama a AuthService.cambiar_password\ncon actual, nueva y sincronizar_mqtt = crear_credencial;
+
+      |AuthService|
+      :cambiar_password(actual, nueva, sincronizar_mqtt)\nUsa correo_actual para verificar la contraseña actual;
+      note right: RF-04
+      |Supabase|
+      :Verifica la contraseña actual del estudiante;
+
+      if (¿La contraseña actual es correcta?) then (sí)
+        |AuthService|
+        :_actualizar_password_auth(nueva);
+        |Supabase|
+        :Actualiza la contraseña en Authentication;
+        note right: RNF-02 se almacena cifrada
+
+        if (¿Supabase aceptó la nueva contraseña?) then (sí)
+          |AuthService|
+          :Ejecuta sincronizar_mqtt(correo, nueva);
+          |EmqxAdminService|
+          :crear_credencial(correo, nueva)\nLa contraseña MQTT queda igual a la nueva;
+
+          if (¿EMQX devolvió un error?) then (sí)
+            |AuthService|
+            :Revierte la contraseña en Authentication\nLanza CambioPasswordRevertidoError;
+          else (no)
+            |AuthService|
+            :Renueva las CredencialesMqtt en memoria;
+          endif
+        else (no)
+          |AuthService|
+          switch (¿Motivo del rechazo?)
+          case (Contraseña débil)
+            :Lanza PasswordDebilError;
+          case (Igual a la anterior)
+            :Lanza PasswordRepetidaError;
+          case (Sin sesión activa)
+            :Lanza SinSesionError;
+          endswitch
+        endif
+      else (no)
+        |AuthService|
+        :Cuenta el intento fallido de contraseña actual;
+        if (¿Se alcanzó el límite de intentos?) then (sí)
+          :Lanza CuentaBloqueadaError;
+        else (no)
+          :Lanza PasswordActualIncorrectaError\ncon intentos_restantes;
+        endif
+      endif
+
+      |ViewModel|
+      if (¿AuthService lanzó una excepción?) then (sí)
+        :Captura el AuthServiceError\ncargando = falso;
+        switch (¿Tipo de excepción?)
+        case (PasswordActualIncorrectaError o CuentaBloqueadaError)
+          :Asigna error_actual con los intentos restantes\no con el aviso de bloqueo;
+        case (PasswordDebilError o PasswordRepetidaError)
+          :Asigna error_nueva con el mensaje correspondiente;
+        case (Otro AuthServiceError)
+          :Prepara una Alerta general\npara cambio revertido, sesión inexistente o falla del servicio;
+        endswitch
+      else (no)
+        :cargando = falso\ncompletado = verdadero;
+      endif
+    endif
+
+    |View|
+    :_on_cambio() → _render()\nMuestra errores, alerta o la PantallaExito;
+
+  repeat while (¿Contraseña actualizada?) is (no) not (sí)
+
+  |ViewModel|
+  :Invoca el callback _al_cambiar;
+  |Inicio y Router|
+  :Router._password_cambiada() atiende el cambio de contraseña;
+  |View|
+  :PantallaExito confirma que la contraseña fue actualizada;
+  note right: RF-05
+  |Estudiante|
+  stop
+
+else (no, edita sus datos)
+
+  ' ==========================================================
+  ' PARTE A — ACTUALIZAR PERFIL
+  ' ==========================================================
+  repeat
+    |Estudiante|
+    :Edita su nombre, sus apellidos o elige Automóvil o Motocicleta;
+
+    |View|
+    :CampoFormulario y TarjetaOpcion envían cada cambio al ViewModel;
+
+    |ViewModel|
+    :set_nombre, set_apellido_paterno, set_apellido_materno\ny set_medio_transporte llaman a _cambio(campo)\nSe validan los datos y se recalculan hay_cambios y puede_guardar\nnotify_listeners();
+
+    |View|
+    :_on_cambio() → _render()\nCampoFormulario.sincronizar() muestra los errores\nEl botón Guardar se habilita solo si hay cambios válidos;
+    note right: RNF-04
+
+    |Estudiante|
+    if (¿Elige regresar?) then (sí)
+      |View|
+      :_on_regresar(e);
+      |ViewModel|
+      :regresar() invoca el callback _al_regresar;
+      |Inicio y Router|
+      :Navega de regreso a Inicio sin guardar los cambios;
+      |Estudiante|
+      stop
+    else (no, pulsa Guardar)
+      |View|
+      :_on_guardar(e) recibe el clic del botón;
+    endif
+
+    |ViewModel|
+    :guardar()\n_validar(): normalizar_nombre() y validar_nombre_apellido_persona()\nSe revisa que haya un medio de transporte elegido;
+
+    if (¿Datos con formato válido?) then (no)
+      :Llena errores por campo;
+      note right: RF-03
+    else (sí)
+      :cargando = verdadero\nguardar() llama a AuthService.actualizar_perfil;
+
+      |AuthService|
+      :actualizar_perfil(nombre, apellido_paterno,\napellido_materno, medio_transporte);
+      |Supabase|
+      :Si cambió el medio de transporte\nconsulta si el estudiante tiene una reserva activa;
+
+      if (¿Cambia el transporte con una reserva activa?) then (sí)
+        |AuthService|
+        :Lanza MedioTransporteBloqueadoError;
+        note right: RF-07
+      else (no)
+        |Supabase|
+        :Actualiza la fila de usuarios\ncon todos los campos en una sola operación;
+        note right: RNF-05 cambios atómicos
+
+        if (¿Supabase actualizó el perfil?) then (sí)
+          |AuthService|
+          :Actualiza el Usuario guardado en memoria\ny lo retorna al ViewModel;
+        else (no)
+          |AuthService|
+          switch (¿Motivo del rechazo?)
+          case (Sin sesión activa)
+            :Lanza SinSesionError;
+          case (Dato inválido)
+            :Lanza DatosInvalidosError con el campo;
+          endswitch
+        endif
+      endif
+
+      |ViewModel|
+      if (¿AuthService lanzó una excepción?) then (sí)
+        :Captura el AuthServiceError\ncargando = falso;
+        switch (¿Tipo de excepción?)
+        case (MedioTransporteBloqueadoError)
+          :aviso_reserva indica que primero debe\nfinalizar o cancelar su reserva;
+        case (DatosInvalidosError)
+          :Guarda el mensaje en errores del campo indicado;
+        case (Otro AuthServiceError)
+          :Prepara una Alerta general;
+        endswitch
+      else (no)
+        :cargando = falso\nguardado = verdadero\nmensaje_exito;
+      endif
+    endif
+
+    |View|
+    :_on_cambio() → _render()\nMuestra errores, BannerAlerta de reserva o alerta general\no BannerExito si se guardó;
+
+  repeat while (¿Perfil guardado?) is (no) not (sí)
+
+  |ViewModel|
+  :Invoca el callback _al_guardar;
+  |Inicio y Router|
+  :Router._perfil_actualizado() atiende la actualización del perfil;
+  |View|
+  :BannerExito.mostrar(mensaje_exito) confirma el cambio;
+  note right: RF-05
+  |Estudiante|
+  stop
+endif
+
+@enduml

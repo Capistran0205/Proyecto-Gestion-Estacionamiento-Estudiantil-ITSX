@@ -11,8 +11,14 @@ from parking_app.models.usuario import Rol
 from parking_app.services.almacen_reserva import AlmacenReserva
 from parking_app.services.auth_service import AuthService
 from parking_app.services.cajones_service import CajonesService
+from parking_app.services.dispositivos_service import DispositivosService
 from parking_app.services.emqx_admin_service import EmqxAdminService
 from parking_app.services.mqtt_service import MqttService
+from parking_app.services.notificaciones_service import (
+    TIPO_CONFLICTO_SENSOR,
+    AvisoPush,
+    NotificacionesService,
+)
 from parking_app.services.reservas_service import ReservasService
 from parking_app.viewmodels.admin_reservas_viewmodel import AdminReservasViewModel
 from parking_app.viewmodels.cambiar_password_viewmodel import CambiarPasswordViewModel
@@ -94,6 +100,8 @@ class Router:
         timeout_nodo_segundos: int,
         reservas_service: ReservasService | None = None,
         almacen_reserva: AlmacenReserva | None = None,
+        notificaciones: NotificacionesService | None = None,
+        dispositivos: DispositivosService | None = None,
     ) -> None:
         self._page = page
         self._auth = auth_service
@@ -103,6 +111,16 @@ class Router:
         self._timeout_nodo = timeout_nodo_segundos
         self._reservas = reservas_service or ReservasService(auth_service.token_acceso)
         self._almacen = almacen_reserva or AlmacenReserva()
+        # Notificaciones push: sin servicio (PC, sin variables de Firebase) no hacen nada.
+        self._notificaciones = notificaciones
+        self._dispositivos = dispositivos or (
+            DispositivosService(auth_service.token_acceso) if notificaciones else None
+        )
+        # Token FCM registrado en el servidor para esta sesión; None si no hay ninguno.
+        self._token_fcm: str | None = None
+        # False desde que empieza el cierre de sesión: ignora renovaciones del token.
+        self._push_activo = False
+        self._aviso_inicial_leido = False
         # Cajón que el estudiante tocó en el mapa; lo recibe la pantalla de reserva.
         self._cajon_a_reservar: str | None = None
         self._tareas: set[asyncio.Task[None]] = set()
@@ -113,6 +131,8 @@ class Router:
         self._inicio: InicioViewModel | None = None
         # ViewModel de Reservas (administrador): se vuelve a consultar al regresar del escáner.
         self._admin_reservas: AdminReservasViewModel | None = None
+        # ViewModel de "Mi reserva": un aviso con la app abierta lo pone al día.
+        self._mi_reserva: MiReservaViewModel | None = None
         self._fabricas: dict[str, Callable[[], Vista]] = {
             RUTA_LOGIN: self._crear_login,
             RUTA_REGISTRO: self._crear_registro,
@@ -198,7 +218,7 @@ class Router:
     def _crear_login(self) -> Vista:
         vm = LoginViewModel(
             self._auth,
-            al_iniciar_sesion=lambda: self.ir(RUTA_INICIO),
+            al_iniciar_sesion=self._sesion_iniciada,
             al_ir_a_registro=lambda: self.ir(RUTA_REGISTRO),
             al_ir_a_recuperar=lambda: self.ir(RUTA_RECUPERAR),
         )
@@ -230,6 +250,7 @@ class Router:
             reservas_service=self._reservas,
             almacen=self._almacen,
             al_ir_a_mi_reserva=lambda: self.ir(RUTA_MI_RESERVA),
+            antes_de_cerrar_sesion=self._quitar_token_push,
         )
         self._inicio = vm
         self._iniciar_en_segundo_plano(vm.iniciar())
@@ -283,6 +304,7 @@ class Router:
             al_ver_cajones=lambda: self.ir(RUTA_OCUPACION),
             ocupacion=self._ocupacion_de_sesion(),
         )
+        self._mi_reserva = vm
         # Lee la copia local, consulta el servidor y arranca la cuenta regresiva.
         tarea = asyncio.get_running_loop().create_task(vm.iniciar())
         self._tareas.add(tarea)
@@ -323,6 +345,77 @@ class Router:
     async def _ir_a_reservar(self, etiqueta: str) -> None:
         self._cajon_a_reservar = etiqueta
         await self.ir(RUTA_RESERVAR)
+
+    # --- Notificaciones push (FCM) ---
+
+    async def _sesion_iniciada(self) -> None:
+        await self.ir(RUTA_INICIO)
+        # Después de navegar: si una notificación abrió la app, su destino va encima de Inicio.
+        if self._notificaciones is not None and self._dispositivos is not None:
+            self._iniciar_en_segundo_plano(self._activar_notificaciones())
+
+    async def _activar_notificaciones(self) -> None:
+        """Pide el permiso, registra el token del dispositivo y atiende la notificación inicial."""
+        self._push_activo = True
+        token = await self._notificaciones.iniciar(
+            self._page, self._token_renovado, self._aviso_en_primer_plano, self._aviso_tocado
+        )
+        if token:
+            await self._registrar_token(token)
+        if not self._aviso_inicial_leido:
+            self._aviso_inicial_leido = True
+            inicial = await self._notificaciones.aviso_inicial()
+            if inicial is not None:
+                await self._aviso_tocado(inicial)
+
+    async def _registrar_token(self, token: str) -> None:
+        # Es "mejor esfuerzo": sin token registrado solo faltan los avisos push.
+        try:
+            await asyncio.to_thread(self._dispositivos.registrar_token, token)
+        except Exception:
+            logger.warning("No se pudo registrar el token de notificaciones", exc_info=True)
+            return
+        self._token_fcm = token
+
+    async def _token_renovado(self, token: str) -> None:
+        if self._push_activo and self._auth.hay_sesion_activa:
+            await self._registrar_token(token)
+
+    async def _quitar_token_push(self) -> None:
+        """Antes de cerrar la sesión: la baja del token necesita el JWT vigente."""
+        self._push_activo = False
+        token, self._token_fcm = self._token_fcm, None
+        if token is None or self._dispositivos is None:
+            return
+        try:
+            await asyncio.to_thread(self._dispositivos.borrar_token, token)
+        except Exception:
+            logger.warning("No se pudo borrar el token de notificaciones", exc_info=True)
+        if self._notificaciones is not None:
+            await self._notificaciones.olvidar_token()
+
+    async def _aviso_en_primer_plano(self, _aviso: AvisoPush) -> None:
+        """Con la app abierta el sistema no muestra el aviso: se ponen al día las pantallas."""
+        if not self._auth.hay_sesion_activa:
+            return
+        if self._mi_reserva is not None and RUTA_MI_RESERVA in self._activas:
+            await self._mi_reserva.actualizar()
+        if self._inicio is not None and RUTA_INICIO in self._activas:
+            await self._inicio.actualizar_reserva()
+        if self._admin_reservas is not None and RUTA_ADMIN_RESERVAS in self._activas:
+            await self._admin_reservas.actualizar()
+
+    async def _aviso_tocado(self, aviso: AvisoPush) -> None:
+        ruta = self._ruta_de_aviso(aviso)
+        if ruta is not None and ruta != self._page.route:
+            await self.ir(ruta)
+
+    def _ruta_de_aviso(self, aviso: AvisoPush) -> str | None:
+        if not self._auth.hay_sesion_activa:
+            return None
+        if self._es_administrador():
+            return RUTA_ADMIN_RESERVAS if aviso.tipo == TIPO_CONFLICTO_SENSOR else None
+        return RUTA_MI_RESERVA
 
     def _perfil_actualizado(self) -> None:
         if self._inicio is not None:

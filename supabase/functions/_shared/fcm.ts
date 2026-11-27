@@ -34,6 +34,28 @@ export async function enviarPush(
   throw new Error(`FCM: HTTP ${respuesta.status} ${texto.slice(0, 200)}`);
 }
 
+/** Un reintento por dispositivo (reintentar el envío completo duplicaría avisos ya entregados). */
+export async function enviarAlDispositivo(
+  borrarToken: (token: string) => PromiseLike<unknown>,
+  proyecto: string,
+  accessToken: string,
+  token: string,
+  notificacion: Notificacion,
+  enviar: typeof enviarPush = enviarPush,
+): Promise<void> {
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      if ((await enviar(proyecto, accessToken, token, notificacion)) === "token_invalido") {
+        console.info("Token FCM inválido; se elimina");
+        await borrarToken(token);
+      }
+      return;
+    } catch (e) {
+      if (intento === 2) console.error(`No se pudo enviar la notificación ${notificacion.datos.tipo}:`, e);
+    }
+  }
+}
+
 function esTokenInvalido(status: number, texto: string): boolean {
   if (status === 404) return true; // UNREGISTERED
   return status === 400 && texto.includes("registration token");

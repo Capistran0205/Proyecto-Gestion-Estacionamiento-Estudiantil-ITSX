@@ -8,8 +8,10 @@ from parking_app.core.config import ConfigError, get_settings
 from parking_app.router import Router
 from parking_app.services.auth_service import AuthService
 from parking_app.services.cajones_service import CajonesService
+from parking_app.services.dispositivos_service import DispositivosService
 from parking_app.services.emqx_admin_service import EmqxAdminService
 from parking_app.services.mqtt_service import MqttService
+from parking_app.services.notificaciones_service import NotificacionesService
 
 # Ruta absoluta: Flet resuelve "assets" relativo al script de arranque (main.py de la raíz).
 # Vive en src/assets porque `flet build` busca ahí los assets y el icono de la app.
@@ -38,13 +40,16 @@ async def main(page: ft.Page) -> None:
         )
         return
 
+    auth = AuthService()
     router = Router(
         page,
-        AuthService(),
+        auth,
         EmqxAdminService(),
         CajonesService(),
         MqttService(),
         timeout_nodo_segundos=settings.nodo_timeout_segundos,
+        notificaciones=NotificacionesService(settings.firebase()),
+        dispositivos=DispositivosService(auth.token_acceso),
     )
     await router.iniciar()
 
